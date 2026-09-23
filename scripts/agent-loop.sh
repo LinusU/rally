@@ -17,8 +17,12 @@
 #   { "mcp": { "servers": { "rally": { "type": "remote", "url": "https://<your-worker>/mcp",
 #       "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" }, "timeout": { "request": 60000 } } } } }
 #
+# Devin CLI (RALLY_AGENT_CLI=devin):
+#
+#   devin mcp add rally --scope user --url https://<your-worker>/mcp -H "Authorization: Bearer $RALLY_AGENT_TOKEN"
+#
 # Environment:
-#   RALLY_AGENT_CLI    claude (default) or opencode
+#   RALLY_AGENT_CLI    claude (default), opencode or devin
 #   RALLY_MODEL        model to use, e.g. opencode/mimo-v2.6-flash-free (default: the CLI's default)
 #   RALLY_IDLE_SLEEP   seconds to wait when there is no work (default 300)
 #   RALLY_MAX_RUNS     stop after this many pieces of work (default: run forever)
@@ -64,8 +68,18 @@ run_session() {
 		fi
 		opencode run --standalone --auto "$@" ${model:+--model "$model"} "$prompt"
 		;;
+	devin)
+		# Sessions are listed per directory and each agent has its own checkout, so --continue finds this one.
+		if [ -n "$resume" ]; then
+			set -- --continue
+		else
+			set --
+		fi
+		devin "$@" ${model:+--model "$model"} --permission-mode dangerous \
+			--respect-workspace-trust false -p "$prompt"
+		;;
 	*)
-		echo "Unknown RALLY_AGENT_CLI '$cli' (use claude or opencode)" >&2
+		echo "Unknown RALLY_AGENT_CLI '$cli' (use claude, opencode or devin)" >&2
 		exit 2
 		;;
 	esac
