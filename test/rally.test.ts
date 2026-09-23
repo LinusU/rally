@@ -191,7 +191,7 @@ describe("work loop", () => {
 		expect(work.type).toBe("implement");
 		expect(work.task.id).toBe(core.id);
 		expect(work.branch).toBe(`rally/${core.id}-build-the-core`);
-		expect(work.steps).toContain(`git checkout -B ${work.branch} origin/main`);
+		expect(work.steps).toContain(`git checkout --no-track -B ${work.branch} origin/main`);
 		expect(work.steps).toContain(".github/");
 
 		// The UI waits on the core, so the second agent has nothing to do.

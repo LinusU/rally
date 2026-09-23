@@ -74,10 +74,10 @@ function workSteps(type: WorkType, project: ProjectRow, task: TaskRow, branch: s
 	} else {
 		if (type === "resume") {
 			add(
-				`Continue the earlier work: \`git fetch origin && git checkout -B ${branch} origin/${branch}\` (if that branch is missing on origin, start from \`origin/${main}\` instead). Read the checkpoint notes in the task history first.`,
+				`Continue the earlier work: \`git fetch origin && git checkout -B ${branch} origin/${branch}\` (if that branch is missing on origin, start from main instead: \`git checkout --no-track -B ${branch} origin/${main}\`). Read the checkpoint notes in the task history first.`,
 			);
 		} else {
-			add(`\`git fetch origin && git checkout -B ${branch} origin/${main}\`.`);
+			add(`\`git fetch origin && git checkout --no-track -B ${branch} origin/${main}\`.`);
 		}
 		add(
 			"Do the task as described below. Follow the project instructions and the repository's own agent docs (AGENTS.md, CLAUDE.md, ...). Keep the change focused on this task.",
