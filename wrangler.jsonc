@@ -1,0 +1,18 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "rally-mcp",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-01",
+	"observability": { "enabled": true },
+	// Release lapsed claims every 10 minutes so the activity log and status stay current overnight.
+	"triggers": { "crons": ["*/10 * * * *"] },
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "rally",
+			// Replace with the id printed by `wrangler d1 create rally`.
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
+		}
+	]
+}

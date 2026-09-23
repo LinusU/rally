@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development (never commit .dev.vars).
+# Owner access key typed into the OAuth sign-in page.
+RALLY_ACCESS_KEY=dev-access-key
+# Fine-grained GitHub PAT: Contents read/write, Checks read, Commit statuses read on the target repos.
+GITHUB_TOKEN=github_pat_replace_me

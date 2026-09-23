@@ -1,0 +1,15 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+	"files": {
+		"includes": [
+			"**",
+			"!node_modules",
+			"!.wrangler",
+			"!worker-configuration.d.ts",
+			"!package-lock.json"
+		]
+	},
+	"formatter": { "indentStyle": "tab", "lineWidth": 100 },
+	"linter": { "enabled": true, "rules": { "preset": "none" } },
+	"javascript": { "formatter": { "quoteStyle": "double", "semicolons": "always" } }
+}

@@ -1,0 +1,32 @@
+{
+	"name": "rally-mcp",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Many agents. One main branch. A shared task queue for autonomous coding agents, exposed as a remote MCP server on Cloudflare Workers.",
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"test": "vitest run",
+		"check": "npm run typecheck && npm run lint && npm run test",
+		"db:migrate": "wrangler d1 migrations apply rally --local",
+		"db:migrate:remote": "wrangler d1 migrations apply rally --remote",
+		"token:create": "node scripts/create-token.mjs"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/server": "2.0.0",
+		"zod": "^4.2.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.0",
+		"@cloudflare/vitest-plugin": "^1.1.5",
+		"@cloudflare/workers-types": "^5.20260907.1",
+		"@modelcontextprotocol/client": "2.0.0",
+		"typescript": "^5.9.0",
+		"vitest": "^4.1.0",
+		"wrangler": "^4.129.0"
+	}
+}
