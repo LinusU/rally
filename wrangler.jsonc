@@ -10,8 +10,7 @@
 		{
 			"binding": "DB",
 			"database_name": "rally",
-			// Replace with the id printed by `wrangler d1 create rally`.
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_id": "8b846f22-f300-463a-9755-953095cd9e3d",
 			"migrations_dir": "migrations"
 		}
 	]
