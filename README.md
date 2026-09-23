@@ -274,7 +274,7 @@ the CLI (and optionally a model):
         "type": "remote",
         "url": "https://<worker>/mcp",
         "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" },
-        "timeout": 60000
+        "timeout": { "request": 60000 }
       }
     }
   }
@@ -289,7 +289,9 @@ RALLY_AGENT_CLI=opencode RALLY_MODEL=opencode/<model> \
 
 Each session runs `opencode run --standalone --auto`, so it sees the loop's
 environment. opencode's default MCP timeout is 5 s, too short for
-`complete_review`, hence `timeout`. `RALLY_MAX_RUNS=1` stops after one session, handy for a first try.
+`complete_review`, hence `timeout`. opencode v2 silently drops a server whose
+config it cannot parse (a plain number for `timeout`, for example), so check
+`opencode run --print-logs` for `mcp connected server=rally` when in doubt. `RALLY_MAX_RUNS=1` stops after one session, handy for a first try.
 
 ### 7. Monitor
 

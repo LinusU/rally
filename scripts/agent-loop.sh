@@ -15,7 +15,7 @@
 # environment, and RALLY_AGENT_TOKEN exported before starting the loop:
 #
 #   { "mcp": { "servers": { "rally": { "type": "remote", "url": "https://<your-worker>/mcp",
-#       "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" }, "timeout": 60000 } } } }
+#       "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" }, "timeout": { "request": 60000 } } } } }
 #
 # Environment:
 #   RALLY_AGENT_CLI    claude (default) or opencode
