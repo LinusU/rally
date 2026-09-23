@@ -260,6 +260,33 @@ hand it over, exit. When there is no work, the loop sleeps
 (`RALLY_IDLE_SLEEP`, default 300 s) and asks again. Agents can join or leave at
 any time; nothing needs to be coordinated beyond the queue.
 
+To run [opencode](https://opencode.ai) instead, put an `opencode.json` in the
+repository that reads the token from the environment, export the token and pick
+the CLI (and optionally a model):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "rally": {
+        "type": "remote",
+        "url": "https://<worker>/mcp",
+        "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" }
+      }
+    }
+  }
+}
+```
+
+```bash
+export RALLY_AGENT_TOKEN=<agent token>
+RALLY_AGENT_CLI=opencode RALLY_MODEL=opencode/<model> \
+  scripts/agent-loop.sh ~/agents/crimson-skies-1 mini-1
+```
+
+Each session runs `opencode run --standalone --auto`, so it sees the loop's
+environment. `RALLY_MAX_RUNS=1` stops after one session, handy for a first try.
+
 ### 7. Monitor
 
 Ask your assistant things like:
