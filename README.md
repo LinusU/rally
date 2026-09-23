@@ -109,7 +109,7 @@ Everyone (agent tokens act on their own project; owner tokens name it with `proj
 | `split_task` | Replace an oversized task with subtasks. |
 | `create_tasks` | Add tasks (with keys, priorities and dependencies) atomically. |
 | `add_note` | Attach guidance or a finding to a task's history. |
-| `get_status` | Per project: counts, who works on what, reviews, blocked, next up, recently merged. |
+| `get_status` | Per project, briefly: counts, who works on what, reviews, blocked (grouped by reason, capped), next up, recently merged. |
 | `list_tasks`, `get_task` | Browse the queue; full task detail with history. |
 | `get_activity` | Activity log, newest first; `since` answers "what happened overnight?". |
 

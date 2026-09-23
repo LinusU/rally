@@ -2,15 +2,20 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { eventStatement, nowIso, placeholders, setClause } from "../db";
 import {
+	BLOCKED_SHOWN,
+	blockedByReason,
 	createTasks,
 	DEPS_SATISFIED,
 	expireStaleClaims,
 	loadTask,
 	queryEvents,
 	resolveProject,
+	TASK_BRIEF_SELECT,
 	TASK_SELECT,
+	type TaskBriefRow,
 	type TaskRow,
 	taskDetail,
+	toTaskBrief,
 	toTaskSummary,
 	visibleProjects,
 	wouldCycle,
@@ -24,6 +29,7 @@ import {
 	projectArg,
 	type ToolContext,
 	ToolError,
+	taskBriefOutput,
 	taskDetailOutput,
 	taskIdSchema,
 	taskStatusSchema,
@@ -38,6 +44,7 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 			title: "Get status",
 			description:
 				"Overview of each project: task counts per status, who is working on what right now, what is blocked and why, what is up next and what was merged recently. " +
+				"Tasks are listed briefly and blocked tasks are grouped by reason; use get_task or list_tasks for full detail. " +
 				"Start here to see how things are going.",
 			inputSchema: z.object({
 				project: projectArg.describe("Project slug; omit to see every project you have access to"),
@@ -54,11 +61,21 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 						readyCount: z
 							.number()
 							.describe("todo/paused tasks whose dependencies are all finished"),
-						active: z.array(taskSummaryOutput).describe("Tasks currently claimed by an agent"),
-						awaitingReview: z.array(taskSummaryOutput),
-						blocked: z.array(taskSummaryOutput),
-						upNext: z.array(taskSummaryOutput),
-						recentlyDone: z.array(taskSummaryOutput),
+						active: z.array(taskBriefOutput).describe("Tasks currently claimed by an agent"),
+						awaitingReview: z.array(taskBriefOutput),
+						blocked: z
+							.array(
+								z.object({
+									reason: z.string().optional(),
+									count: z.number().describe("Blocked tasks with this reason"),
+									tasks: z.array(taskBriefOutput),
+								}),
+							)
+							.describe(
+								`Blocked tasks grouped by reason, most recent first; at most ${BLOCKED_SHOWN} reasons and ${BLOCKED_SHOWN} tasks are listed (counts.blocked has the total, list_tasks with status ['blocked'] every one)`,
+							),
+						upNext: z.array(taskBriefOutput),
+						recentlyDone: z.array(taskBriefOutput),
 					}),
 				),
 			}),
@@ -72,11 +89,11 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 					const q = (where: string, order: string, limit: number) =>
 						ctx.db
 							.prepare(
-								`${TASK_SELECT} WHERE t.project_id = ? AND ${where} ORDER BY ${order} LIMIT ${limit}`,
+								`${TASK_BRIEF_SELECT} WHERE t.project_id = ? AND ${where} ORDER BY ${order} LIMIT ${limit}`,
 							)
 							.bind(p.id)
-							.all<TaskRow>()
-							.then((r) => r.results.map(toTaskSummary));
+							.all<TaskBriefRow>()
+							.then((r) => r.results.map(toTaskBrief));
 					const [counts, ready, active, awaitingReview, blocked, upNext, recentlyDone] =
 						await Promise.all([
 							ctx.db
@@ -93,7 +110,7 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 								.first<{ n: number }>(),
 							q("t.claim_id IS NOT NULL", "t.claimed_at", 50),
 							q("t.status = 'needs_review'", "t.updated_at", 20),
-							q("t.status = 'blocked'", "t.updated_at DESC", 20),
+							blockedByReason(ctx.db, p.id),
 							q(
 								`t.status IN ('todo', 'paused') AND ${DEPS_SATISFIED}`,
 								"CASE t.status WHEN 'paused' THEN 0 ELSE 1 END, t.priority DESC, t.updated_at, t.id",

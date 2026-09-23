@@ -146,6 +146,17 @@ export const taskSummaryOutput = z.object({
 	doneAt: z.string().optional(),
 });
 
+/** The slim task shape get_status uses; get_task has the full detail. */
+export const taskBriefOutput = z.object({
+	id: z.number(),
+	key: z.string().optional(),
+	title: z.string(),
+	status: taskStatusSchema,
+	waitingOnCount: z.number().optional().describe("Dependencies that are not finished yet"),
+	claim: claimOutput.optional(),
+	doneAt: z.string().optional(),
+});
+
 export const eventOutput = z.object({
 	id: z.number(),
 	at: z.string(),

@@ -476,7 +476,13 @@ describe("work loop", () => {
 
 		const status = await callTool("get_status", {}, OWNER_TOKEN);
 		const mine = status.projects.find((x: { project: string }) => x.project === "block");
-		expect(mine.blocked.map((t: { id: number }) => t.id)).toEqual([part1.task.id]);
+		expect(mine.blocked).toEqual([
+			{
+				reason: "Which file format?",
+				count: 1,
+				tasks: [{ id: part1.task.id, key: "part-1", title: "Part 1", status: "blocked" }],
+			},
+		]);
 
 		await callTool("add_note", { taskId: part1.task.id, text: "Use JSON." }, OWNER_TOKEN);
 		await callTool(
@@ -489,6 +495,70 @@ describe("work loop", () => {
 		expect(
 			again.task.history.find((e: { type: string }) => e.type === "task.note").details.text,
 		).toBe("Use JSON.");
+	});
+
+	it("keeps get_status brief and groups blocked tasks by reason", async () => {
+		const p = await createProject("brief");
+		const block = (ids: number[], blockedReason: string) =>
+			callTool(
+				"update_tasks",
+				{ updates: ids.map((taskId) => ({ taskId, status: "blocked", blockedReason })) },
+				OWNER_TOKEN,
+			);
+		const { created } = await callTool(
+			"create_tasks",
+			{
+				project: "brief",
+				tasks: [
+					{ key: "base", title: "Base" },
+					...Array.from({ length: 11 }, (_, i) => ({
+						title: `Needs rig ${i}`,
+						dependsOn: ["base"],
+					})),
+					{ title: "Licence A" },
+					{ title: "Licence B" },
+				],
+			},
+			OWNER_TOKEN,
+		);
+		const ids = created.map((t: { id: number }) => t.id);
+		await block(ids.slice(1, 12), "Needs hardware");
+		await block(ids.slice(12), "Which licence?");
+
+		const status = await callTool("get_status", { project: "brief" }, OWNER_TOKEN);
+		const [mine] = status.projects;
+		expect(mine.counts.blocked).toBe(13);
+		expect(mine.blocked.map((g: { reason: string; count: number }) => [g.reason, g.count])).toEqual(
+			[
+				["Which licence?", 2],
+				["Needs hardware", 11],
+			],
+		);
+		const [licence, hardware] = mine.blocked;
+		expect(licence.tasks.map((t: { id: number }) => t.id)).toEqual([ids[13], ids[12]]);
+		expect(hardware.tasks).toHaveLength(8);
+		expect(hardware.tasks[0]).toEqual({
+			id: ids[11],
+			title: "Needs rig 10",
+			status: "blocked",
+			waitingOnCount: 1,
+		});
+		expect(mine.upNext).toEqual([{ id: ids[0], key: "base", title: "Base", status: "todo" }]);
+
+		await callTool("request_work", {}, p.agentA);
+		const [after] = (await callTool("get_status", { project: "brief" }, OWNER_TOKEN)).projects;
+		expect(after.active).toEqual([
+			{
+				id: ids[0],
+				key: "base",
+				title: "Base",
+				status: "in_progress",
+				claim: expect.objectContaining({
+					kind: "implement",
+					by: expect.stringContaining("agent-a"),
+				}),
+			},
+		]);
 	});
 
 	it("ends an agent's claim when the owner changes the task status", async () => {

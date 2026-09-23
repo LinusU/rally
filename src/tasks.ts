@@ -151,21 +151,102 @@ export function toTaskSummary(row: TaskRow) {
 		headSha: row.head_sha,
 		mergedSha: row.merged_sha,
 		blockedReason: row.status === "blocked" ? row.blocked_reason : null,
-		claim:
-			row.claim_id && row.claim_kind && row.claimed_by && row.claimed_at && row.lease_expires_at
-				? {
-						kind: row.claim_kind,
-						by: row.claimed_by,
-						since: row.claimed_at,
-						leaseExpiresAt: row.lease_expires_at,
-					}
-				: null,
+		claim: claimOf(row),
 		claimCount: row.claim_count,
 		createdBy: row.created_by,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 		doneAt: row.done_at,
 	});
+}
+
+type ClaimColumns = Pick<
+	TaskRow,
+	"claim_id" | "claim_kind" | "claimed_by" | "claimed_at" | "lease_expires_at"
+>;
+
+function claimOf(row: ClaimColumns) {
+	return row.claim_id && row.claim_kind && row.claimed_by && row.claimed_at && row.lease_expires_at
+		? {
+				kind: row.claim_kind,
+				by: row.claimed_by,
+				since: row.claimed_at,
+				leaseExpiresAt: row.lease_expires_at,
+			}
+		: null;
+}
+
+/** Just enough of a task for an overview; get_task and list_tasks have the rest. */
+export interface TaskBriefRow extends ClaimColumns {
+	id: number;
+	key: string | null;
+	title: string;
+	status: TaskStatus;
+	blocked_reason: string | null;
+	done_at: string | null;
+	updated_at: string;
+	open_deps: number;
+}
+
+export const TASK_BRIEF_SELECT = `SELECT t.id, t.key, t.title, t.status, t.blocked_reason, t.claim_id,
+	t.claim_kind, t.claimed_by, t.claimed_at, t.lease_expires_at, t.done_at, t.updated_at,
+	(SELECT COUNT(*) FROM task_deps d JOIN tasks dt ON dt.id = d.depends_on
+	  WHERE d.task_id = t.id AND dt.status NOT IN ${FINISHED}) AS open_deps
+	FROM tasks t`;
+
+export function toTaskBrief(row: TaskBriefRow) {
+	return compact({
+		id: row.id,
+		key: row.key,
+		title: row.title,
+		status: row.status,
+		waitingOnCount: row.open_deps > 0 ? row.open_deps : null,
+		claim: claimOf(row),
+		doneAt: row.status === "done" ? row.done_at : null,
+	});
+}
+
+/** How many blocked tasks (and distinct reasons) get_status lists. */
+export const BLOCKED_SHOWN = 10;
+
+/**
+ * Blocked tasks of one project grouped by reason, most recently blocked first. Every group gets an
+ * example before any group gets a second one, and at most BLOCKED_SHOWN tasks are listed in all.
+ */
+export async function blockedByReason(db: D1Database, projectId: string) {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM (
+			   SELECT b.*, COUNT(*) OVER (PARTITION BY b.blocked_reason) AS reason_count,
+			     ROW_NUMBER() OVER (PARTITION BY b.blocked_reason ORDER BY b.updated_at DESC, b.id DESC) AS reason_rank
+			   FROM (${TASK_BRIEF_SELECT} WHERE t.project_id = ? AND t.status = 'blocked') b
+			 ) WHERE reason_rank <= ? ORDER BY updated_at DESC, id DESC`,
+		)
+		.bind(projectId, BLOCKED_SHOWN)
+		.all<TaskBriefRow & { reason_count: number }>();
+	const groups = new Map<string | null, { count: number; rows: TaskBriefRow[] }>();
+	for (const row of results) {
+		const group = groups.get(row.blocked_reason) ?? { count: row.reason_count, rows: [] };
+		group.rows.push(row);
+		groups.set(row.blocked_reason, group);
+	}
+	const shown = [...groups.entries()].slice(0, BLOCKED_SHOWN).map(([reason, g]) => ({
+		reason,
+		count: g.count,
+		rows: g.rows,
+		tasks: [] as ReturnType<typeof toTaskBrief>[],
+	}));
+	let listed = 0;
+	for (let rank = 0; listed < BLOCKED_SHOWN && rank < BLOCKED_SHOWN; rank++) {
+		for (const g of shown) {
+			const row = g.rows[rank];
+			if (row && listed < BLOCKED_SHOWN) {
+				g.tasks.push(toTaskBrief(row));
+				listed++;
+			}
+		}
+	}
+	return shown.map((g) => compact({ reason: g.reason, count: g.count, tasks: g.tasks }));
 }
 
 /** Load a task the caller may see, or throw. */
