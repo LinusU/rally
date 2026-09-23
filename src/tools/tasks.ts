@@ -18,6 +18,7 @@ import {
 import {
 	eventOutput,
 	handle,
+	MAX_DEPENDENCIES,
 	newTaskSchema,
 	ok,
 	projectArg,
@@ -306,7 +307,7 @@ export function registerTaskAdminTools(server: McpServer, ctx: ToolContext): voi
 							priority: z.number().int().min(-100).max(100).optional(),
 							dependsOn: z
 								.array(z.union([taskIdSchema, z.string().min(1)]))
-								.max(50)
+								.max(MAX_DEPENDENCIES)
 								.optional()
 								.describe("Replaces all dependencies: task ids or keys in the same project"),
 							status: settableStatus.optional(),

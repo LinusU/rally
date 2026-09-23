@@ -69,6 +69,9 @@ export const shaSchema = z
 	.regex(/^[0-9a-f]{40}$/, "Use the full 40-character commit SHA")
 	.describe("Full 40-character commit SHA");
 
+/** A final integration task can wait for a whole milestone, so this is well above one batch of tasks. */
+export const MAX_DEPENDENCIES = 200;
+
 export const newTaskSchema = z.object({
 	key: z
 		.string()
@@ -96,7 +99,7 @@ export const newTaskSchema = z.object({
 		.describe("Higher runs first. Default 0."),
 	dependsOn: z
 		.array(z.union([taskIdSchema, z.string().min(1)]))
-		.max(50)
+		.max(MAX_DEPENDENCIES)
 		.default([])
 		.describe(
 			"Tasks that must be done (or cancelled) first: ids of existing tasks, or keys of existing tasks or of tasks in this same call.",
