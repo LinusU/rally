@@ -4,6 +4,7 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-09-01",
 	"observability": { "enabled": true },
+	"routes": [{ "pattern": "rally.linusu.com", "custom_domain": true }],
 	// Release lapsed claims every 10 minutes so the activity log and status stay current overnight.
 	"triggers": { "crons": ["*/10 * * * *"] },
 	"d1_databases": [
