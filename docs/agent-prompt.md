@@ -14,7 +14,15 @@ Do exactly one piece of work in this session:
 4. Finish by calling exactly one of `submit_for_review`, `complete_review`, `save_checkpoint`,
    `split_task` or `block_task`. If a Rally call fails, read the error: it says what to do next
    (for example rebase and push again, or wait for CI). Follow it and call again.
-5. Stop after that. A fresh session will pick up the next piece of work.
+5. After that call has succeeded, print `RALLY_DONE` on its own line and stop. A fresh session will pick up
+   the next piece of work.
+
+Your session ends the moment you stop calling tools, and any command still running is killed with it.
+So never end your reply to wait for something:
+- Run builds, tests and CI waits in the foreground and wait for them to finish.
+- If your tool moves a long command to the background, keep checking its output (for example
+  `sleep 60; tail -n 20 <output file>`) until it has finished, and heartbeat while you wait.
+- Only stop after step 4 (or `RALLY_NO_WORK`). If you cannot finish, push and call `save_checkpoint`.
 
 Rules:
 - Never push to the main branch. Only push the task branch Rally gave you.

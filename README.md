@@ -256,7 +256,9 @@ scripts/agent-loop.sh ~/agents/crimson-skies-1 mini-1
 
 Each iteration starts a fresh `claude -p` session with
 [`docs/agent-prompt.md`](docs/agent-prompt.md): request work, follow the steps,
-hand it over, exit. When there is no work, the loop sleeps
+hand it over, print `RALLY_DONE`, exit. A session that stops before handing
+over (weaker models like to end their turn "to wait for the build") is resumed
+with a nudge, up to `RALLY_MAX_NUDGES` times. When there is no work, the loop sleeps
 (`RALLY_IDLE_SLEEP`, default 300 s) and asks again. Agents can join or leave at
 any time; nothing needs to be coordinated beyond the queue.
 
@@ -271,7 +273,8 @@ the CLI (and optionally a model):
       "rally": {
         "type": "remote",
         "url": "https://<worker>/mcp",
-        "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" }
+        "headers": { "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}" },
+        "timeout": 60000
       }
     }
   }
@@ -285,7 +288,8 @@ RALLY_AGENT_CLI=opencode RALLY_MODEL=opencode/<model> \
 ```
 
 Each session runs `opencode run --standalone --auto`, so it sees the loop's
-environment. `RALLY_MAX_RUNS=1` stops after one session, handy for a first try.
+environment. opencode's default MCP timeout is 5 s, too short for
+`complete_review`, hence `timeout`. `RALLY_MAX_RUNS=1` stops after one session, handy for a first try.
 
 ### 7. Monitor
 
