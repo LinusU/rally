@@ -294,10 +294,9 @@ config it cannot parse (a plain number for `timeout`, for example), so check
 `opencode run --print-logs` for `mcp connected server=rally` when in doubt. `RALLY_MAX_RUNS=1` stops after one session, handy for a first try.
 
 To use up credits before they reset, give the loop a stop time: `RALLY_RUN_FOR=9h` or
-`RALLY_STOP_AT=07:00` (the next 07:00; `"2026-09-29 07:00"` also works). At that
-time the running session is killed with everything it started and the loop exits.
-Pushed work stays on the task branch, and when the loop starts again under the
-same agent name Rally hands it the claim it still holds.
+`RALLY_STOP_AT=07:00` (the next 07:00; `"2026-09-29 07:00"` also works). After that
+time the loop starts no new session and resumes no stalled one; the session that is
+running finishes its piece of work, then the loop exits.
 
 ### 7. Monitor
 

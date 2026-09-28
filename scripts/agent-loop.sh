@@ -31,8 +31,8 @@
 #   RALLY_RUN_FOR      stop after this long, e.g. 9h, 90m or 3600s
 #   RALLY_STOP_AT      stop at this local time: HH:MM (the next one) or "YYYY-MM-DD HH:MM"
 #
-# At the stop time the running session is killed and the loop exits. Whatever the agent pushed stays on
-# its branch, and Rally hands its claim back when the loop starts again under the same agent name.
+# After the stop time the loop starts no new session and resumes no stalled one: the session that is
+# running then finishes its piece of work, and the loop exits.
 #
 # Give each concurrently running agent its own checkout. When there is no work, sleep and ask again.
 
@@ -142,39 +142,6 @@ run_session() {
 	esac
 }
 
-# run_bounded <log> <run_session args...>: run a session with its output shown and appended to <log>. At the
-# stop time the session is killed together with everything it started (builds, tests).
-session_pid=""
-run_bounded() {
-	local log="$1"
-	shift
-	if [ "$deadline" -eq 0 ]; then
-		run_session "$@" 2>&1 | tee -a "$log" || true
-		return
-	fi
-	set -m # its own process group, so one signal reaches the CLI and all its children
-	run_session "$@" > >(tee -a "$log") 2>&1 &
-	session_pid=$!
-	set +m
-	while kill -0 "$session_pid" 2>/dev/null; do
-		if past_deadline; then
-			echo "[$name] stop time reached; stopping the running session"
-			kill -TERM -- "-$session_pid" 2>/dev/null || true
-			for _ in 1 2 3 4 5 6 7 8 9 10; do
-				kill -0 "$session_pid" 2>/dev/null || break
-				sleep 1
-			done
-			kill -KILL -- "-$session_pid" 2>/dev/null || true
-			break
-		fi
-		sleep 5
-	done
-	wait "$session_pid" 2>/dev/null || true
-	session_pid=""
-}
-# The session is not in the terminal's process group, so pass on Ctrl-C ourselves.
-trap '[ -n "$session_pid" ] && kill -TERM -- "-$session_pid" 2>/dev/null; exit 130' INT TERM
-
 if [ "$deadline" -gt 0 ]; then
 	echo "[$name] running until $(date -r "$deadline" 2>/dev/null || date -d "@$deadline")"
 fi
@@ -188,7 +155,7 @@ while true; do
 	id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 	title="rally: $name $id"
 
-	run_bounded "$log" "$id" "$title" "$prompt"
+	run_session "$id" "$title" "$prompt" 2>&1 | tee "$log" || true
 	nudges=0
 	backoff="$nudge_backoff"
 	while ! grep -Eq "RALLY_(DONE|NO_WORK)" "$log" && [ "$nudges" -lt "$max_nudges" ] && ! past_deadline; do
@@ -198,7 +165,7 @@ while true; do
 		nap "$backoff"
 		backoff=$((backoff * 2))
 		stop_if_past_deadline
-		run_bounded "$log" "$id" "$title" "$nudge" resume
+		run_session "$id" "$title" "$nudge" resume 2>&1 | tee -a "$log" || true
 	done
 	runs=$((runs + 1))
 
