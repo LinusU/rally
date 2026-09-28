@@ -28,6 +28,11 @@
 #   RALLY_MAX_RUNS     stop after this many pieces of work (default: run forever)
 #   RALLY_MAX_NUDGES   how often to resume a session that stopped before handing its work over (default 5)
 #   RALLY_NUDGE_BACKOFF  seconds to wait before the first resume, doubled each time (default 30)
+#   RALLY_RUN_FOR      stop after this long, e.g. 9h, 90m or 3600s
+#   RALLY_STOP_AT      stop at this local time: HH:MM (the next one) or "YYYY-MM-DD HH:MM"
+#
+# At the stop time the running session is killed and the loop exits. Whatever the agent pushed stays on
+# its branch, and Rally hands its claim back when the loop starts again under the same agent name.
 #
 # Give each concurrently running agent its own checkout. When there is no work, sleep and ask again.
 
@@ -42,6 +47,56 @@ max_runs="${RALLY_MAX_RUNS:-0}"
 max_nudges="${RALLY_MAX_NUDGES:-5}"
 nudge_backoff="${RALLY_NUDGE_BACKOFF:-30}"
 prompt_file="$(cd "$(dirname "$0")/.." && pwd)/docs/agent-prompt.md"
+
+# Seconds since the epoch for a local "YYYY-MM-DD HH:MM", with GNU or BSD date.
+epoch_of() {
+	date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$1:00" +%s 2>/dev/null
+}
+
+deadline=0
+if [ -n "${RALLY_RUN_FOR:-}" ]; then
+	case "$RALLY_RUN_FOR" in
+	*h) seconds=$((${RALLY_RUN_FOR%h} * 3600)) ;;
+	*m) seconds=$((${RALLY_RUN_FOR%m} * 60)) ;;
+	*s) seconds=${RALLY_RUN_FOR%s} ;;
+	*) seconds=$RALLY_RUN_FOR ;;
+	esac
+	deadline=$(($(date +%s) + seconds))
+elif [ -n "${RALLY_STOP_AT:-}" ]; then
+	case "$RALLY_STOP_AT" in
+	[0-9]:[0-9][0-9] | [0-9][0-9]:[0-9][0-9]) stop_at="$(date +%Y-%m-%d) $RALLY_STOP_AT" ;;
+	*) stop_at="$RALLY_STOP_AT" ;;
+	esac
+	deadline="$(epoch_of "$stop_at")" || {
+		echo "RALLY_STOP_AT must be HH:MM or \"YYYY-MM-DD HH:MM\", got '$RALLY_STOP_AT'" >&2
+		exit 2
+	}
+	# A bare HH:MM that has already passed today means tomorrow.
+	if [ "$stop_at" != "$RALLY_STOP_AT" ] && [ "$deadline" -le "$(date +%s)" ]; then
+		deadline=$((deadline + 86400))
+	fi
+fi
+
+past_deadline() {
+	[ "$deadline" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]
+}
+
+# Sleep, but never past the stop time.
+nap() {
+	local seconds="$1"
+	if [ "$deadline" -gt 0 ]; then
+		local left=$((deadline - $(date +%s)))
+		[ "$left" -lt "$seconds" ] && seconds=$((left > 0 ? left : 0))
+	fi
+	sleep "$seconds"
+}
+
+stop_if_past_deadline() {
+	if past_deadline; then
+		echo "[$name] stop time reached; exiting"
+		exit 0
+	fi
+}
 
 nudge="Your session stopped before you handed the work over: you have not printed RALLY_DONE. \
 Anything you left running in the background was killed. Check where things stand (git status, the pushed \
@@ -87,24 +142,63 @@ run_session() {
 	esac
 }
 
+# run_bounded <log> <run_session args...>: run a session with its output shown and appended to <log>. At the
+# stop time the session is killed together with everything it started (builds, tests).
+session_pid=""
+run_bounded() {
+	local log="$1"
+	shift
+	if [ "$deadline" -eq 0 ]; then
+		run_session "$@" 2>&1 | tee -a "$log" || true
+		return
+	fi
+	set -m # its own process group, so one signal reaches the CLI and all its children
+	run_session "$@" > >(tee -a "$log") 2>&1 &
+	session_pid=$!
+	set +m
+	while kill -0 "$session_pid" 2>/dev/null; do
+		if past_deadline; then
+			echo "[$name] stop time reached; stopping the running session"
+			kill -TERM -- "-$session_pid" 2>/dev/null || true
+			for _ in 1 2 3 4 5 6 7 8 9 10; do
+				kill -0 "$session_pid" 2>/dev/null || break
+				sleep 1
+			done
+			kill -KILL -- "-$session_pid" 2>/dev/null || true
+			break
+		fi
+		sleep 5
+	done
+	wait "$session_pid" 2>/dev/null || true
+	session_pid=""
+}
+# The session is not in the terminal's process group, so pass on Ctrl-C ourselves.
+trap '[ -n "$session_pid" ] && kill -TERM -- "-$session_pid" 2>/dev/null; exit 130' INT TERM
+
+if [ "$deadline" -gt 0 ]; then
+	echo "[$name] running until $(date -r "$deadline" 2>/dev/null || date -d "@$deadline")"
+fi
+
 cd "$checkout"
 runs=0
 while true; do
+	stop_if_past_deadline
 	log="$(mktemp "${TMPDIR:-/tmp}/rally-agent.XXXXXX")"
 	prompt="$(sed "s/{{AGENT_NAME}}/$name/g" "$prompt_file")"
 	id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
 	title="rally: $name $id"
 
-	run_session "$id" "$title" "$prompt" 2>&1 | tee "$log" || true
+	run_bounded "$log" "$id" "$title" "$prompt"
 	nudges=0
 	backoff="$nudge_backoff"
-	while ! grep -Eq "RALLY_(DONE|NO_WORK)" "$log" && [ "$nudges" -lt "$max_nudges" ]; do
+	while ! grep -Eq "RALLY_(DONE|NO_WORK)" "$log" && [ "$nudges" -lt "$max_nudges" ] && ! past_deadline; do
 		nudges=$((nudges + 1))
 		# Often a rate limit: resuming right away just fails again, so wait longer each time.
 		echo "[$name] session stopped without handing over; resuming it in ${backoff}s ($nudges/$max_nudges)"
-		sleep "$backoff"
+		nap "$backoff"
 		backoff=$((backoff * 2))
-		run_session "$id" "$title" "$nudge" resume 2>&1 | tee -a "$log" || true
+		stop_if_past_deadline
+		run_bounded "$log" "$id" "$title" "$nudge" resume
 	done
 	runs=$((runs + 1))
 
@@ -114,16 +208,17 @@ while true; do
 	grep -Eq "RALLY_(DONE|NO_WORK)" "$log" || gave_up=true
 	rm -f "$log"
 
+	stop_if_past_deadline
 	if [ "$max_runs" -gt 0 ] && [ "$runs" -ge "$max_runs" ]; then
 		echo "[$name] finished $runs session(s)"
 		break
 	fi
 	if $no_work; then
 		echo "[$name] no work available, sleeping ${idle_sleep}s"
-		sleep "$idle_sleep"
+		nap "$idle_sleep"
 	elif $gave_up; then
 		# Rally hands the claim back to the next session under this name, so nothing is lost by waiting.
 		echo "[$name] session never handed over; starting a fresh one in ${idle_sleep}s"
-		sleep "$idle_sleep"
+		nap "$idle_sleep"
 	fi
 done
