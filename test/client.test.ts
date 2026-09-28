@@ -25,4 +25,17 @@ describe("official MCP client", () => {
 
 		await client.close();
 	});
+
+	it("declines to open a standalone SSE stream", async () => {
+		const p = await createProject("client-get");
+		const res = await SELF.fetch("https://rally.test/mcp", {
+			headers: {
+				accept: "text/event-stream",
+				authorization: `Bearer ${p.agentA}`,
+				"mcp-protocol-version": "2025-11-25",
+			},
+		});
+		expect(res.status).toBe(405);
+		expect(res.headers.get("allow")).toBe("POST");
+	});
 });

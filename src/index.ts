@@ -35,6 +35,13 @@ export default {
 		if (oauthResponse) return oauthResponse;
 
 		if (url.pathname === MCP_PATH) {
+			// Stateless and never pushing notifications, Rally has no standalone SSE stream (GET) and no
+			// session to end (DELETE). A 405 tells clients to stop asking; answering GET with a stream that
+			// closes at once made opencode reconnect about once a second, each time costing a full request.
+			if (request.method !== "POST") {
+				return new Response(null, { status: 405, headers: { allow: "POST" } });
+			}
+
 			const auth = await authenticate(request, env);
 			if (!auth.ok) return unauthorized(url.origin, auth.reason);
 			ctx.waitUntil(touchToken(env, auth.actor.tokenId));
