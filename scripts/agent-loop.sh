@@ -27,6 +27,7 @@
 #   RALLY_IDLE_SLEEP   seconds to wait when there is no work (default 300)
 #   RALLY_MAX_RUNS     stop after this many pieces of work (default: run forever)
 #   RALLY_MAX_NUDGES   how often to resume a session that stopped before handing its work over (default 5)
+#   RALLY_NUDGE_BACKOFF  seconds to wait before the first resume, doubled each time (default 30)
 #
 # Give each concurrently running agent its own checkout. When there is no work, sleep and ask again.
 
@@ -39,6 +40,7 @@ model="${RALLY_MODEL:-}"
 idle_sleep="${RALLY_IDLE_SLEEP:-300}"
 max_runs="${RALLY_MAX_RUNS:-0}"
 max_nudges="${RALLY_MAX_NUDGES:-5}"
+nudge_backoff="${RALLY_NUDGE_BACKOFF:-30}"
 prompt_file="$(cd "$(dirname "$0")/.." && pwd)/docs/agent-prompt.md"
 
 nudge="Your session stopped before you handed the work over: you have not printed RALLY_DONE. \
@@ -95,15 +97,21 @@ while true; do
 
 	run_session "$id" "$title" "$prompt" 2>&1 | tee "$log" || true
 	nudges=0
+	backoff="$nudge_backoff"
 	while ! grep -Eq "RALLY_(DONE|NO_WORK)" "$log" && [ "$nudges" -lt "$max_nudges" ]; do
 		nudges=$((nudges + 1))
-		echo "[$name] session stopped without handing over; resuming it ($nudges/$max_nudges)"
+		# Often a rate limit: resuming right away just fails again, so wait longer each time.
+		echo "[$name] session stopped without handing over; resuming it in ${backoff}s ($nudges/$max_nudges)"
+		sleep "$backoff"
+		backoff=$((backoff * 2))
 		run_session "$id" "$title" "$nudge" resume 2>&1 | tee -a "$log" || true
 	done
 	runs=$((runs + 1))
 
 	no_work=false
+	gave_up=false
 	grep -q "RALLY_NO_WORK" "$log" && no_work=true
+	grep -Eq "RALLY_(DONE|NO_WORK)" "$log" || gave_up=true
 	rm -f "$log"
 
 	if [ "$max_runs" -gt 0 ] && [ "$runs" -ge "$max_runs" ]; then
@@ -112,6 +120,10 @@ while true; do
 	fi
 	if $no_work; then
 		echo "[$name] no work available, sleeping ${idle_sleep}s"
+		sleep "$idle_sleep"
+	elif $gave_up; then
+		# Rally hands the claim back to the next session under this name, so nothing is lost by waiting.
+		echo "[$name] session never handed over; starting a fresh one in ${idle_sleep}s"
 		sleep "$idle_sleep"
 	fi
 done
