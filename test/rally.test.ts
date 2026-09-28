@@ -413,8 +413,33 @@ describe("work loop", () => {
 		);
 		expect(checkpoint.details.notes).toContain("Next: wire up X.");
 
-		const fifth = await callTool("request_work", {}, p.agentB);
+		// A second session of the same token needs its own agentName to get more work.
+		const fifth = await callTool("request_work", { agentName: "s2" }, p.agentB);
 		expect(fifth.task.id).toBe(low.id);
+	});
+
+	it("hands an agent back the claim it still holds instead of new work", async () => {
+		const p = await createProject("held");
+		await callTool("create_tasks", { tasks: [{ title: "One" }, { title: "Two" }] }, p.agentA);
+
+		const first = await callTool("request_work", { agentName: "mini-1" }, p.agentA);
+		// The session crashed; the loop starts a new one under the same name.
+		const again = await callTool("request_work", { agentName: "mini-1" }, p.agentA);
+		expect(again).toMatchObject({
+			type: "resume",
+			claimId: first.claimId,
+			task: { id: first.task.id, status: "in_progress" },
+		});
+		expect(again.steps).toContain("You already hold this claim");
+		expect(again.task.history.map((e: { type: string }) => e.type)).toContain("claim.resumed");
+
+		// Another session name, or another agent, still gets the next task.
+		const other = await callTool("request_work", { agentName: "mini-2" }, p.agentA);
+		expect(other.task.id).not.toBe(first.task.id);
+
+		// The returned claim works as before.
+		const beat = await callTool("heartbeat", { claimId: again.claimId }, p.agentA);
+		expect(beat.taskId).toBe(first.task.id);
 	});
 
 	it("requeues work whose lease expired, and lets the old holder resume if nobody took it", async () => {

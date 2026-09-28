@@ -240,7 +240,7 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Request work",
 			description:
-				"Claim the next piece of work in a project. Priority: (1) branches waiting for review, (2) tasks another agent started and checkpointed, (3) the highest-priority task whose dependencies are done. " +
+				"Claim the next piece of work in a project. If this agent (same token and agentName) still holds a claim, that claim is returned again. Otherwise, priority: (1) branches waiting for review, (2) tasks another agent started and checkpointed, (3) the highest-priority task whose dependencies are done. " +
 				"Returns the task, the branch to use, a claimId for all follow-up calls and step-by-step instructions. Returns type 'none' when there is nothing to do right now.",
 			inputSchema: z.object({
 				project: projectArg,
@@ -286,6 +286,53 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 				});
 			}
 
+			const by = args.agentName ? `${ctx.actor.name}/${args.agentName}` : ctx.actor.name;
+
+			// An agent whose session crashed or ran into a rate limit asks again under the same name. Hand back
+			// what it already holds, instead of new work while the old claim blocks its task until the lease runs out.
+			const held = await ctx.db
+				.prepare(
+					`${TASK_SELECT} WHERE t.project_id = ? AND t.claim_id IS NOT NULL AND t.claimed_by = ?
+					 ORDER BY t.claimed_at LIMIT 1`,
+				)
+				.bind(project.id, by)
+				.first<TaskRow>();
+			if (held?.claim_id) {
+				const type: WorkType = held.claim_kind === "review" ? "review" : "resume";
+				const branch = held.branch ?? branchFor(project, held);
+				const [update] = await ctx.db.batch([
+					ctx.db
+						.prepare(
+							"UPDATE tasks SET lease_expires_at = ?, updated_at = ? WHERE id = ? AND claim_id = ?",
+						)
+						.bind(leaseEnd(project), nowIso(), held.id, held.claim_id),
+					eventStatement(
+						ctx.db,
+						ctx.actor,
+						{
+							projectId: project.id,
+							taskId: held.id,
+							type: "claim.resumed",
+							summary: `${by} asked for work while still holding #${held.id}; handed its claim back`,
+							actorName: by,
+						},
+						true,
+					),
+				]);
+				if (update?.meta.changes === 1) {
+					const task = await loadTask(ctx, held.id);
+					return ok({
+						type,
+						claimId: held.claim_id,
+						leaseExpiresAt: task.lease_expires_at,
+						project: projectInfo,
+						branch,
+						steps: `You already hold this claim from an earlier session; carry on with it. Check the branch on origin and the task history for what was already done.\n${workSteps(type, project, task, branch)}`,
+						task: await taskDetail(ctx, task),
+					});
+				}
+			}
+
 			const { results: candidates } = await ctx.db
 				.prepare(
 					`${TASK_SELECT} WHERE t.project_id = ? AND t.claim_id IS NULL
@@ -297,7 +344,6 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 				.bind(project.id)
 				.all<TaskRow>();
 
-			const by = args.agentName ? `${ctx.actor.name}/${args.agentName}` : ctx.actor.name;
 			for (const candidate of candidates) {
 				const review = candidate.status === "needs_review";
 				const type: WorkType = review
