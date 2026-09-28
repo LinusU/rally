@@ -2,6 +2,7 @@
 # Run one Rally agent forever: a fresh coding-agent session per piece of work, Ralph style.
 #
 #   scripts/agent-loop.sh /path/to/checkout [agent-name]
+#   scripts/agent-loop.sh --stop /path/to/checkout    # stop that loop once its current session is done
 #
 # The checkout must be a clone (or worktree) of the project's repository whose `origin` the agent can
 # push to, with the Rally MCP server configured under the name "rally" using an agent token.
@@ -31,12 +32,24 @@
 #   RALLY_RUN_FOR      stop after this long, e.g. 9h, 90m or 3600s
 #   RALLY_STOP_AT      stop at this local time: HH:MM (the next one) or "YYYY-MM-DD HH:MM"
 #
-# After the stop time the loop starts no new session and resumes no stalled one: the session that is
-# running then finishes its piece of work, and the loop exits.
+# After the stop time, or once `--stop` was run for its checkout, the loop starts no new session and resumes
+# no stalled one: the session that is running then finishes its piece of work, and the loop exits.
 #
 # Give each concurrently running agent its own checkout. When there is no work, sleep and ask again.
 
 set -euo pipefail
+
+# The stop request lives in the checkout's own git directory, where agents never see or commit it.
+stop_file_for() {
+	echo "$(git -C "$1" rev-parse --absolute-git-dir)/rally-stop"
+}
+
+if [ "${1:-}" = "--stop" ]; then
+	checkout="${2:?usage: agent-loop.sh --stop <checkout>}"
+	touch "$(stop_file_for "$checkout")"
+	echo "The loop in $checkout stops once its current session is done."
+	exit 0
+fi
 
 checkout="${1:?usage: agent-loop.sh <checkout> [agent-name]}"
 name="${2:-$(hostname -s)-$$}"
@@ -77,23 +90,25 @@ elif [ -n "${RALLY_STOP_AT:-}" ]; then
 	fi
 fi
 
-past_deadline() {
-	[ "$deadline" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]
+stop_file="$(stop_file_for "$checkout")"
+rm -f "$stop_file" # a request left over from an earlier run
+
+should_stop() {
+	[ -e "$stop_file" ] || { [ "$deadline" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; }
 }
 
-# Sleep, but never past the stop time.
+# Sleep, but wake up for the stop time or a stop request.
 nap() {
-	local seconds="$1"
-	if [ "$deadline" -gt 0 ]; then
-		local left=$((deadline - $(date +%s)))
-		[ "$left" -lt "$seconds" ] && seconds=$((left > 0 ? left : 0))
-	fi
-	sleep "$seconds"
+	local until=$(($(date +%s) + $1))
+	while [ "$(date +%s)" -lt "$until" ] && ! should_stop; do
+		sleep 5
+	done
 }
 
-stop_if_past_deadline() {
-	if past_deadline; then
-		echo "[$name] stop time reached; exiting"
+stop_if_requested() {
+	if should_stop; then
+		rm -f "$stop_file"
+		echo "[$name] stopping as requested"
 		exit 0
 	fi
 }
@@ -146,10 +161,12 @@ if [ "$deadline" -gt 0 ]; then
 	echo "[$name] running until $(date -r "$deadline" 2>/dev/null || date -d "@$deadline")"
 fi
 
+echo "[$name] to stop after the current session: $0 --stop $checkout"
+
 cd "$checkout"
 runs=0
 while true; do
-	stop_if_past_deadline
+	stop_if_requested
 	log="$(mktemp "${TMPDIR:-/tmp}/rally-agent.XXXXXX")"
 	prompt="$(sed "s/{{AGENT_NAME}}/$name/g" "$prompt_file")"
 	id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
@@ -158,13 +175,13 @@ while true; do
 	run_session "$id" "$title" "$prompt" 2>&1 | tee "$log" || true
 	nudges=0
 	backoff="$nudge_backoff"
-	while ! grep -Eq "RALLY_(DONE|NO_WORK)" "$log" && [ "$nudges" -lt "$max_nudges" ] && ! past_deadline; do
+	while ! grep -Eq "RALLY_(DONE|NO_WORK)" "$log" && [ "$nudges" -lt "$max_nudges" ] && ! should_stop; do
 		nudges=$((nudges + 1))
 		# Often a rate limit: resuming right away just fails again, so wait longer each time.
 		echo "[$name] session stopped without handing over; resuming it in ${backoff}s ($nudges/$max_nudges)"
 		nap "$backoff"
 		backoff=$((backoff * 2))
-		stop_if_past_deadline
+		stop_if_requested
 		run_session "$id" "$title" "$nudge" resume 2>&1 | tee -a "$log" || true
 	done
 	runs=$((runs + 1))
@@ -175,7 +192,7 @@ while true; do
 	grep -Eq "RALLY_(DONE|NO_WORK)" "$log" || gave_up=true
 	rm -f "$log"
 
-	stop_if_past_deadline
+	stop_if_requested
 	if [ "$max_runs" -gt 0 ] && [ "$runs" -ge "$max_runs" ]; then
 		echo "[$name] finished $runs session(s)"
 		break

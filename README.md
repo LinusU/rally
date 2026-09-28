@@ -298,6 +298,12 @@ To use up credits before they reset, give the loop a stop time: `RALLY_RUN_FOR=9
 time the loop starts no new session and resumes no stalled one; the session that is
 running finishes its piece of work, then the loop exits.
 
+To stop a loop gracefully at any time, run `scripts/agent-loop.sh --stop <checkout>`
+from another terminal: the running session finishes its piece of work and the loop
+exits (a sleeping loop exits within seconds). Ctrl-C stops at once and kills the
+running session too; its pushed work survives and Rally hands the claim back on the
+next start under the same agent name.
+
 ### 7. Monitor
 
 Ask your assistant things like:
