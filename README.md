@@ -174,7 +174,11 @@ Two ways to get a token:
 - Agents push with their own git credentials. They need push access to task
   branches, not to `main`. To enforce that, give agents credentials that
   cannot bypass a ruleset restricting updates to `main`, and keep Rally's
-  token on that ruleset's bypass list.
+  token on that ruleset's bypass list. Where the machine's SSH keys need an
+  agent or a prompt nobody is there to answer, export `RALLY_GITHUB_TOKEN`
+  (a fine-grained PAT with *Contents: read and write*) before starting
+  `scripts/agent-loop.sh`: every git command of the loop and its sessions
+  then reaches github.com over HTTPS with that token, even for SSH remotes.
 
 Because Rally moves `main` with a PAT, the resulting push triggers your `main`
 workflows normally.

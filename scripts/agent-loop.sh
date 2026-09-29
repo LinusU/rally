@@ -31,6 +31,9 @@
 #   RALLY_NUDGE_BACKOFF  seconds to wait before the first resume, doubled each time (default 30)
 #   RALLY_RUN_FOR      stop after this long, e.g. 9h, 90m or 3600s
 #   RALLY_STOP_AT      stop at this local time: HH:MM (the next one) or "YYYY-MM-DD HH:MM"
+#   RALLY_GITHUB_TOKEN a GitHub token (e.g. a fine-grained PAT with Contents: read and write) that every git
+#                      command of the loop and its sessions uses for github.com, over HTTPS even when the
+#                      remote is an SSH URL. Handy where SSH keys need an agent or a prompt nobody answers.
 #
 # After the stop time, or once `--stop` was run for its checkout, the loop starts no new session and resumes
 # no stalled one: the session that is running then finishes its piece of work, and the loop exits.
@@ -88,6 +91,23 @@ elif [ -n "${RALLY_STOP_AT:-}" ]; then
 	if [ "$stop_at" != "$RALLY_STOP_AT" ] && [ "$deadline" -le "$(date +%s)" ]; then
 		deadline=$((deadline + 86400))
 	fi
+fi
+
+# Configure git through the environment, so the sessions inherit it and no config file changes. The helper
+# reads the token when git asks for it, so the token itself never ends up in the config.
+if [ -n "${RALLY_GITHUB_TOKEN:-}" ]; then
+	git_config_count="${GIT_CONFIG_COUNT:-0}"
+	add_git_config() {
+		export "GIT_CONFIG_KEY_$git_config_count=$1" "GIT_CONFIG_VALUE_$git_config_count=$2"
+		git_config_count=$((git_config_count + 1))
+	}
+	add_git_config url.https://github.com/.insteadOf git@github.com:
+	add_git_config url.https://github.com/.insteadOf ssh://git@github.com/
+	# An empty helper drops the ones configured before (e.g. the keychain), which may hold another account.
+	add_git_config credential.https://github.com.helper ""
+	add_git_config credential.https://github.com.helper \
+		'!f() { echo username=x-access-token; echo "password=$RALLY_GITHUB_TOKEN"; }; f'
+	export GIT_CONFIG_COUNT="$git_config_count"
 fi
 
 stop_file="$(stop_file_for "$checkout")"
