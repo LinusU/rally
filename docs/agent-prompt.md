@@ -28,4 +28,4 @@ Rules:
 - Never push to the main branch. Only push the task branch Rally gave you.
 - Quality over speed: a reviewer merges only what builds, passes CI and meets the acceptance criteria.
 - If you notice other problems, file them with `create_tasks` rather than fixing them in this task.
-- If your claim becomes invalid (the error says so), stop immediately.
+- If your claim becomes invalid (the error says so), stop immediately: do not push again, print `RALLY_DONE` and end the session. The task has been handed to someone else.
