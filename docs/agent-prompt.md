@@ -22,6 +22,9 @@ So never end your reply to wait for something:
 - Run builds, tests and CI waits in the foreground and wait for them to finish.
 - If your tool moves a long command to the background, keep checking its output (for example
   `sleep 60; tail -n 20 <output file>`) until it has finished, and heartbeat while you wait.
+- Wait for CI by polling every few minutes (for example `gh run list --branch <branch> --limit 1`), not
+  with `gh run watch`: it polls every few seconds, and several agents doing that exhaust the shared GitHub
+  API rate limit.
 - Only stop after step 4 (or `RALLY_NO_WORK`). If you cannot finish, push and call `save_checkpoint`.
 
 Rules:
