@@ -1,0 +1,85 @@
+# Rally's lander. Copy to .github/workflows/land.yml in a repository whose Rally project uses
+# `landingMode: queue`, and add `workflow_dispatch:` to the triggers of the CI workflow below.
+#
+# Rally dispatches it (repository_dispatch, event `rally-land`) for one approved task at a time. It
+# rebases the approved commit onto main, checks that the change is still exactly the approved one,
+# pushes the result to the task branch, starts CI on it and reports to Rally with the commit status
+# `rally/land` on the approved commit. Rally waits for CI on the rebased commit and fast-forwards main.
+# On a conflict or a different change it reports failure and pushes nothing; Rally sends the task back
+# to review.
+name: Rally land
+
+on:
+  repository_dispatch:
+    types: [rally-land]
+
+permissions:
+  contents: write # push the rebased task branch
+  statuses: write # report to Rally
+  actions: write # start CI on the rebased branch
+
+concurrency:
+  group: rally-land
+  cancel-in-progress: false
+
+env:
+  # The CI workflow file. Pushes made with GITHUB_TOKEN never trigger workflows, so the lander starts
+  # CI itself; that workflow must list `workflow_dispatch:` among its triggers.
+  CI_WORKFLOW: ci.yml
+
+jobs:
+  land:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TASK: ${{ github.event.client_payload.task }}
+      BRANCH: ${{ github.event.client_payload.branch }}
+      APPROVED: ${{ github.event.client_payload.approvedSha }}
+      MAIN: ${{ github.event.client_payload.mainBranch }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Rebase the approved commit onto main
+        run: |
+          set -euo pipefail
+          report() {
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$APPROVED" -f state="$1" -f context=rally/land \
+              -f description="$(printf '%.140s' "$2")" -f target_url="$RUN_URL" > /dev/null
+            echo "rally/land: $1: $2"
+          }
+          [[ "$APPROVED" =~ ^[0-9a-f]{40}$ ]] || { echo "bad approvedSha"; exit 1; }
+          [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ && "$MAIN" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "bad branch"; exit 1; }
+          trap 'report error "the lander failed unexpectedly; see the workflow run"' ERR
+
+          git config user.name "rally-lander"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --quiet origin "$MAIN" "$BRANCH"
+
+          head=$(git rev-parse "origin/$BRANCH")
+          if [ "$head" != "$APPROVED" ]; then
+            report failure "$BRANCH moved after the approval (it is at ${head:0:10})"
+            exit 0
+          fi
+          base=$(git merge-base "origin/$MAIN" "$APPROVED")
+          approved_id=$(git diff "$base" "$APPROVED" | git patch-id --stable | cut -d' ' -f1)
+
+          git checkout --quiet --detach "$APPROVED"
+          if ! git rebase --quiet "origin/$MAIN"; then
+            git rebase --abort
+            report failure "rebase conflict with $MAIN; a reviewer must rebase it by hand"
+            exit 0
+          fi
+          rebased_id=$(git diff "origin/$MAIN" HEAD | git patch-id --stable | cut -d' ' -f1)
+          if [ -z "$rebased_id" ] || [ "$rebased_id" != "$approved_id" ]; then
+            report failure "the rebased change differs from the approved one; it needs another review"
+            exit 0
+          fi
+
+          rebased=$(git rev-parse HEAD)
+          git push --quiet --force-with-lease="$BRANCH:$APPROVED" origin "HEAD:refs/heads/$BRANCH"
+          gh workflow run "$CI_WORKFLOW" --ref "$BRANCH"
+          report success "rebased #$TASK onto $MAIN as ${rebased:0:10}; CI started"
