@@ -56,7 +56,8 @@ tool to call at the end.
   wrong, rebase on the latest `main`, push, wait for CI to go green on that exact
   commit, then `complete_review(commitSha)`. Rally then verifies, on GitHub:
   1. the branch head is exactly `commitSha`
-  2. `main` is an ancestor of it (a fast-forward; otherwise rebase again)
+  2. `main` is an ancestor of it (a fast-forward; otherwise rebase again, or,
+     with a [landing queue](#the-landing-queue), let Rally land it)
   3. no protected path changed (unless the task allows it)
   4. CI on that commit is green: every GitHub Actions workflow run and commit
      status passes, at least one exists, and every `requiredChecks` name is
@@ -71,6 +72,37 @@ tool to call at the end.
   original waits for them, then comes back as the integration step).
   `block_task` parks a task until the owner answers. `create_tasks` files
   follow-ups and bugs found along the way.
+
+### The landing queue
+
+With many agents, `main` moves often. A reviewer that needs CI on a commit at
+the tip of `main` can then lose the race again and again: by the time CI is
+green, `main` has moved and the review starts over. Set a project's
+`landingMode` to `queue` to separate approving from landing:
+
+- `complete_review` still checks the branch head, protected paths and CI on the
+  reviewed commit. If that commit fast-forwards `main` and nothing else is
+  waiting, Rally merges it as before. Otherwise it records the approval
+  (status `approved`), ends the review and puts the task in the landing queue.
+- Rally lands approved commits **one at a time, oldest approval first** (status
+  `landing`; a unique index keeps it to one per project). If the approved commit
+  still fast-forwards `main`, only the ref update is left. If not, Rally
+  dispatches the repository's lander workflow (`repository_dispatch` event
+  `rally-land`, see [`docs/land.yml`](docs/land.yml)). The lander rebases the
+  approved commit onto `main`, checks with `git patch-id` that the change is
+  still exactly the approved one, force-pushes it to the task branch, starts CI
+  on it and reports through the commit status `rally/land` on the approved
+  commit. Rally then waits for CI on the rebased commit and fast-forwards `main`.
+- A landing that cannot succeed as approved (rebase conflict, a different
+  change, red CI, someone pushed to the branch) goes back to `needs_review` with
+  the reason in the task history. One that only stalled (no report from the
+  lander, CI not finishing, `main` moved by hand) is retried, up to three times.
+- The cron (every 2 minutes) and `request_work` move the queue along;
+  `get_status` lists it as `landingQueue`.
+
+Since only Rally moves `main` and it lands one task at a time, nothing races,
+and reviewers never wait on CI for someone else's rebase. `ff` (the default)
+keeps the original behaviour.
 
 ### Claims are leases
 
@@ -90,6 +122,8 @@ working, so a slow agent does not lose its task to a timeout nobody acted on.
 | `paused` | Started, then checkpointed or lease expired. Resumed before new work. |
 | `needs_review` | Submitted; waiting for a reviewer. |
 | `reviewing` | Claimed by an agent for review. |
+| `approved` | Reviewed, CI green, waiting in the landing queue (`landingMode: queue`). |
+| `landing` | Being landed by Rally: rebased by the lander, waiting for CI, then fast-forwarded. |
 | `done` | Merged: `main` was fast-forwarded to `mergedSha`. |
 | `blocked` | Needs a human. Not handed out until the owner changes the status. |
 | `cancelled` | Not needed. Counts as finished for dependencies. |
@@ -104,7 +138,7 @@ Everyone (agent tokens act on their own project; owner tokens name it with `proj
 | `heartbeat` | Renew the lease; optionally log a progress note. |
 | `save_checkpoint` | Stop early; the task goes back to the queue with your notes. |
 | `submit_for_review` | Hand over a finished, pushed branch. |
-| `complete_review` | Approve an exact commit; Rally checks CI and fast-forwards main. |
+| `complete_review` | Approve an exact commit; Rally checks CI and fast-forwards main (or queues it to land). |
 | `block_task` | Park the task until a human decides. |
 | `split_task` | Replace an oversized task with subtasks. |
 | `create_tasks` | Add tasks (with keys, priorities and dependencies) atomically. |
@@ -135,6 +169,7 @@ label, e.g. `mini-1/s2`).
 | `requiredChecks` | `[]` | Workflow names / status contexts that must be present and green. Guards against merging before a slow workflow has even started. |
 | `protectedPaths` | `[]` | Path prefixes agents may not change (`.github/`, `specs/`, ...). Per-task override: `allowProtectedChanges`. |
 | `leaseMinutes` | `60` | Claim lifetime without a call. |
+| `landingMode` | `ff` | `queue`: approvals are landed by Rally one at a time ([landing queue](#the-landing-queue)). |
 | `paused` | `false` | Stop handing out work. |
 
 ## Authentication
@@ -179,6 +214,13 @@ Two ways to get a token:
   (a fine-grained PAT with *Contents: read and write*) before starting
   `scripts/agent-loop.sh`: every git command of the loop and its sessions
   then reaches github.com over HTTPS with that token, even for SSH remotes.
+
+- For a [landing queue](#the-landing-queue): copy [`docs/land.yml`](docs/land.yml)
+  to `.github/workflows/land.yml` and let the CI workflow also run on
+  `workflow_dispatch`. The lander pushes with the workflow's own `GITHUB_TOKEN`,
+  and pushes made with it never trigger workflows, so it starts CI on the rebased
+  branch explicitly. Rally dispatches the lander with its `GITHUB_TOKEN`
+  (`repository_dispatch` needs *Contents: read and write*, which it already has).
 
 Because Rally moves `main` with a PAT, the resulting push triggers your `main`
 workflows normally.
@@ -362,4 +404,5 @@ test/                 vitest suites (fake GitHub in test/github.ts)
   Objects. Both the 2025-era protocol (today's ChatGPT/Claude, answered with
   JSON) and the 2026-07-28 revision are served.
 - **Free tier.** A handful of D1 queries per call and at most five GitHub
-  requests for `complete_review`; the cron runs one cheap query every 10 minutes.
+  requests for `complete_review`; the cron runs every 2 minutes and costs one cheap
+  query unless something is landing.
