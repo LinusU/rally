@@ -63,7 +63,7 @@ function workSteps(type: WorkType, project: ProjectRow, task: TaskRow, branch: s
 			`Rebase onto the latest main: \`git fetch origin && git rebase origin/${main}\`, resolve conflicts, run the project's checks locally, then \`git push --force-with-lease origin ${branch}\`.`,
 		);
 		add(
-			`Wait until GitHub CI has finished and is green for exactly the pushed commit (\`git rev-parse HEAD\`), e.g. with \`gh run list --commit <sha>\` and \`gh run watch <run-id> --exit-status\`. If CI fails, fix, push and wait again.`,
+			`Wait until GitHub CI has finished and is green for exactly the pushed commit (\`git rev-parse HEAD\`), Poll every few minutes with \`gh run list --commit <sha>\` and heartbeat in between; do not use \`gh run watch\`, it exhausts the shared GitHub API rate limit. If CI fails, fix, push and wait again.`,
 		);
 		add(
 			`Call complete_review with that commit SHA. Rally re-checks the branch head and CI, then fast-forwards ${main} to it. If ${main} moved in the meantime, Rally refuses: rebase again and repeat from step 4.`,
