@@ -1,5 +1,13 @@
 import { vi } from "vitest";
 
+interface CommitStatusRow {
+	context: string;
+	state: string;
+	description: string;
+	target_url: string;
+	updated_at: string;
+}
+
 /** A GitHub Actions workflow run, as far as Rally looks at it. */
 interface CheckRun {
 	name: string;
@@ -16,6 +24,9 @@ export class FakeGitHub {
 	readonly files = new Map<string, string[]>();
 	readonly branches = new Map<string, string>();
 	readonly checks = new Map<string, CheckRun[]>();
+	readonly statuses = new Map<string, CommitStatusRow[]>();
+	/** repository_dispatch payloads, oldest first. */
+	readonly dispatches: Array<{ event_type: string; client_payload: Record<string, unknown> }> = [];
 	readonly calls: string[] = [];
 	/** Runs just before a ref update is applied, to simulate concurrent pushes. */
 	beforeRefUpdate: (() => void) | null = null;
@@ -66,6 +77,27 @@ export class FakeGitHub {
 		this.setChecks(sha, ["test", "completed", "success"]);
 	}
 
+	/** Report a commit status, replacing an earlier one of the same context. */
+	setStatus(sha: string, context: string, state: string, description = ""): void {
+		const rows = (this.statuses.get(sha) ?? []).filter((r) => r.context !== context);
+		rows.push({
+			context,
+			state,
+			description,
+			target_url: `https://github.com/${this.repo}/actions/runs/1`,
+			updated_at: new Date().toISOString(),
+		});
+		this.statuses.set(sha, rows);
+	}
+
+	/** What the lander workflow does: rebase the approved branch onto main, push it, report success. */
+	land(branch: string): string {
+		const approved = this.branches.get(branch) as string;
+		const rebased = this.rebase(branch);
+		this.setStatus(approved, "rally/land", "success", `rebased as ${rebased.slice(0, 7)}`);
+		return rebased;
+	}
+
 	ancestors(sha: string): string[] {
 		const out: string[] = [];
 		let c: string | null | undefined = sha;
@@ -92,7 +124,14 @@ export class FakeGitHub {
 	private handle(
 		method: string,
 		url: URL,
-		body: { sha?: string; force?: boolean } | undefined,
+		body:
+			| {
+					sha?: string;
+					force?: boolean;
+					event_type?: string;
+					client_payload?: Record<string, unknown>;
+			  }
+			| undefined,
 	): Response {
 		const prefix = `/repos/${this.repo}/`;
 		const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), { status });
@@ -160,7 +199,17 @@ export class FakeGitHub {
 			});
 		}
 		m = /^commits\/([0-9a-f]{40})\/status$/.exec(path);
-		if (m?.[1]) return reply(200, { state: "pending", total_count: 0, statuses: [] });
+		if (m?.[1]) {
+			const statuses = this.statuses.get(m[1]) ?? [];
+			return reply(200, { state: "pending", total_count: statuses.length, statuses });
+		}
+		if (path === "dispatches" && method === "POST") {
+			this.dispatches.push({
+				event_type: body?.event_type ?? "",
+				client_payload: body?.client_payload ?? {},
+			});
+			return new Response(null, { status: 204 });
+		}
 
 		return reply(404, { message: `Fake GitHub has no route for ${method} ${path}` });
 	}

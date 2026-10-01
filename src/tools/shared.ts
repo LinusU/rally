@@ -49,6 +49,8 @@ export const taskStatusSchema = z.enum([
 	"paused",
 	"needs_review",
 	"reviewing",
+	"approved",
+	"landing",
 	"done",
 	"blocked",
 	"cancelled",
@@ -137,6 +139,18 @@ export const taskSummaryOutput = z.object({
 	branch: z.string().optional(),
 	headSha: z.string().optional(),
 	mergedSha: z.string().optional(),
+	approvedSha: z
+		.string()
+		.optional()
+		.describe("For approved/landing tasks: the reviewed commit waiting to land"),
+	landing: z
+		.object({
+			since: z.string(),
+			attempt: z.number(),
+			rebasedSha: z.string().optional(),
+		})
+		.optional()
+		.describe("For a landing task: the attempt in progress"),
 	blockedReason: z.string().optional(),
 	claim: claimOutput.optional(),
 	claimCount: z.number(),
@@ -194,6 +208,7 @@ export const projectOutput = z.object({
 	requiredChecks: z.array(z.string()),
 	protectedPaths: z.array(z.string()),
 	leaseMinutes: z.number(),
+	landingMode: z.enum(["ff", "queue"]),
 	paused: z.boolean(),
 	createdAt: z.string(),
 	updatedAt: z.string(),

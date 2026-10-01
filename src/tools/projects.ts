@@ -42,6 +42,11 @@ const settings = {
 		.min(5)
 		.max(24 * 60)
 		.describe("How long a claim lives without a call from its agent (default 60)"),
+	landingMode: z
+		.enum(["ff", "queue"])
+		.describe(
+			"'ff' (default): complete_review fast-forwards main or refuses, and the reviewer rebases again. 'queue': complete_review approves and Rally lands approved commits one at a time with the repository's lander workflow (repository_dispatch event 'rally-land').",
+		),
 };
 
 /** Owner-only: projects. */
@@ -82,6 +87,7 @@ export function registerProjectTools(server: McpServer, ctx: ToolContext): void 
 				requiredChecks: settings.requiredChecks.default([]),
 				protectedPaths: settings.protectedPaths.default([]),
 				leaseMinutes: settings.leaseMinutes.default(60),
+				landingMode: settings.landingMode.default("ff"),
 			}),
 			outputSchema: z.object({ project: projectOutput }),
 			annotations: { destructiveHint: false },
@@ -97,8 +103,8 @@ export function registerProjectTools(server: McpServer, ctx: ToolContext): void 
 			await ctx.db.batch([
 				ctx.db
 					.prepare(
-						`INSERT INTO projects (id, slug, name, repo, main_branch, branch_prefix, instructions, required_checks, protected_paths, lease_minutes, created_at, updated_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						`INSERT INTO projects (id, slug, name, repo, main_branch, branch_prefix, instructions, required_checks, protected_paths, lease_minutes, landing_mode, created_at, updated_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					)
 					.bind(
 						id,
@@ -111,6 +117,7 @@ export function registerProjectTools(server: McpServer, ctx: ToolContext): void 
 						JSON.stringify(args.requiredChecks),
 						JSON.stringify(args.protectedPaths),
 						args.leaseMinutes,
+						args.landingMode,
 						ts,
 						ts,
 					),
@@ -144,6 +151,7 @@ export function registerProjectTools(server: McpServer, ctx: ToolContext): void 
 				requiredChecks: settings.requiredChecks.optional(),
 				protectedPaths: settings.protectedPaths.optional(),
 				leaseMinutes: settings.leaseMinutes.optional(),
+				landingMode: settings.landingMode.optional(),
 				paused: z.boolean().optional(),
 			}),
 			outputSchema: z.object({ project: projectOutput }),
@@ -160,6 +168,7 @@ export function registerProjectTools(server: McpServer, ctx: ToolContext): void 
 				required_checks: args.requiredChecks && JSON.stringify(args.requiredChecks),
 				protected_paths: args.protectedPaths && JSON.stringify(args.protectedPaths),
 				lease_minutes: args.leaseMinutes,
+				landing_mode: args.landingMode,
 				paused: args.paused === undefined ? undefined : args.paused ? 1 : 0,
 			});
 			if (!sql) throw new ToolError("Nothing to change.");

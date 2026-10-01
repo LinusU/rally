@@ -16,6 +16,7 @@ export interface ProjectRow {
 	required_checks: string;
 	protected_paths: string;
 	lease_minutes: number;
+	landing_mode: "ff" | "queue";
 	paused: number;
 	created_at: string;
 	updated_at: string;
@@ -32,6 +33,7 @@ export function toProject(row: ProjectRow) {
 		requiredChecks: parseJsonArray<string>(row.required_checks),
 		protectedPaths: parseJsonArray<string>(row.protected_paths),
 		leaseMinutes: row.lease_minutes,
+		landingMode: row.landing_mode,
 		paused: row.paused === 1,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
@@ -112,6 +114,12 @@ export interface TaskRow {
 	lease_expires_at: string | null;
 	expired_claim_id: string | null;
 	claim_count: number;
+	approved_sha: string | null;
+	approved_by: string | null;
+	approved_at: string | null;
+	landing_started_at: string | null;
+	landing_sha: string | null;
+	landing_attempts: number;
 	created_by: string;
 	created_at: string;
 	updated_at: string;
@@ -150,6 +158,15 @@ export function toTaskSummary(row: TaskRow) {
 		branch: row.branch,
 		headSha: row.head_sha,
 		mergedSha: row.merged_sha,
+		approvedSha: row.status === "approved" || row.status === "landing" ? row.approved_sha : null,
+		landing:
+			row.status === "landing" && row.landing_started_at
+				? compact({
+						since: row.landing_started_at,
+						attempt: row.landing_attempts,
+						rebasedSha: row.landing_sha,
+					})
+				: null,
 		blockedReason: row.status === "blocked" ? row.blocked_reason : null,
 		claim: claimOf(row),
 		claimCount: row.claim_count,
@@ -339,8 +356,8 @@ export async function taskDetail(ctx: ToolContext, row: TaskRow) {
 	};
 }
 
-/** Who Rally itself acts as when it changes state on its own (lease expiry). */
-const SYSTEM = { name: "rally", role: "system" as Actor["role"] };
+/** Who Rally itself acts as when it changes state on its own (lease expiry, landing). */
+export const SYSTEM = { name: "rally", role: "system" as Actor["role"] };
 
 /**
  * Release claims whose lease lapsed: implementation goes back to `paused` (resumable), review back

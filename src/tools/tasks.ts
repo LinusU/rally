@@ -63,6 +63,11 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 							.describe("todo/paused tasks whose dependencies are all finished"),
 						active: z.array(taskBriefOutput).describe("Tasks currently claimed by an agent"),
 						awaitingReview: z.array(taskBriefOutput),
+						landingQueue: z
+							.array(taskBriefOutput)
+							.describe(
+								"Approved commits waiting to land, the one landing first (projects with a landing queue)",
+							),
 						blocked: z
 							.array(
 								z.object({
@@ -94,30 +99,43 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 							.bind(p.id)
 							.all<TaskBriefRow>()
 							.then((r) => r.results.map(toTaskBrief));
-					const [counts, ready, active, awaitingReview, blocked, upNext, recentlyDone] =
-						await Promise.all([
-							ctx.db
-								.prepare(
-									"SELECT status, COUNT(*) AS n FROM tasks WHERE project_id = ? GROUP BY status",
-								)
-								.bind(p.id)
-								.all<{ status: string; n: number }>(),
-							ctx.db
-								.prepare(
-									`SELECT COUNT(*) AS n FROM tasks t WHERE t.project_id = ? AND t.status IN ('todo', 'paused') AND ${DEPS_SATISFIED}`,
-								)
-								.bind(p.id)
-								.first<{ n: number }>(),
-							q("t.claim_id IS NOT NULL", "t.claimed_at", 50),
-							q("t.status = 'needs_review'", "t.updated_at", 20),
-							blockedByReason(ctx.db, p.id),
-							q(
-								`t.status IN ('todo', 'paused') AND ${DEPS_SATISFIED}`,
-								"CASE t.status WHEN 'paused' THEN 0 ELSE 1 END, t.priority DESC, t.updated_at, t.id",
-								5,
-							),
-							q("t.status = 'done'", "t.done_at DESC", 5),
-						]);
+					const [
+						counts,
+						ready,
+						active,
+						awaitingReview,
+						landingQueue,
+						blocked,
+						upNext,
+						recentlyDone,
+					] = await Promise.all([
+						ctx.db
+							.prepare(
+								"SELECT status, COUNT(*) AS n FROM tasks WHERE project_id = ? GROUP BY status",
+							)
+							.bind(p.id)
+							.all<{ status: string; n: number }>(),
+						ctx.db
+							.prepare(
+								`SELECT COUNT(*) AS n FROM tasks t WHERE t.project_id = ? AND t.status IN ('todo', 'paused') AND ${DEPS_SATISFIED}`,
+							)
+							.bind(p.id)
+							.first<{ n: number }>(),
+						q("t.claim_id IS NOT NULL", "t.claimed_at", 50),
+						q("t.status = 'needs_review'", "t.updated_at", 20),
+						q(
+							"t.status IN ('landing', 'approved')",
+							"CASE t.status WHEN 'landing' THEN 0 ELSE 1 END, t.approved_at, t.id",
+							20,
+						),
+						blockedByReason(ctx.db, p.id),
+						q(
+							`t.status IN ('todo', 'paused') AND ${DEPS_SATISFIED}`,
+							"CASE t.status WHEN 'paused' THEN 0 ELSE 1 END, t.priority DESC, t.updated_at, t.id",
+							5,
+						),
+						q("t.status = 'done'", "t.done_at DESC", 5),
+					]);
 					return {
 						project: p.slug,
 						name: p.name,
@@ -127,6 +145,7 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
 						readyCount: ready?.n ?? 0,
 						active,
 						awaitingReview,
+						landingQueue,
 						blocked,
 						upNext,
 						recentlyDone,

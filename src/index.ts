@@ -6,6 +6,8 @@ import {
 } from "@modelcontextprotocol/server";
 import { authenticate, touchToken, unauthorized } from "./auth";
 import type { Env } from "./env";
+import { GitHub } from "./github";
+import { advanceAllLanding } from "./landing";
 import { createRallyServer } from "./mcp";
 import { handleOAuth } from "./oauth";
 import { expireStaleClaims } from "./tasks";
@@ -87,8 +89,16 @@ export default {
 		return json({ error: "not_found" }, 404);
 	},
 
-	/** Cron trigger (see wrangler.jsonc): release lapsed claims even when no agent is asking for work. */
+	/**
+	 * Cron trigger (see wrangler.jsonc): release lapsed claims and move landing queues along even when
+	 * no agent is asking for work.
+	 */
 	async scheduled(_event, env, ctx): Promise<void> {
-		ctx.waitUntil(expireStaleClaims(env.DB));
+		ctx.waitUntil(
+			Promise.all([
+				expireStaleClaims(env.DB),
+				advanceAllLanding(env.DB, new GitHub(env.GITHUB_TOKEN)),
+			]),
+		);
 	},
 } satisfies ExportedHandler<Env>;

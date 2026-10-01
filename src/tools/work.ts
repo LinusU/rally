@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { compact, eventStatement, isoPlusSeconds, newId, nowIso, parseJsonArray } from "../db";
+import { advanceLanding, landingQueueLength, touchesProtected } from "../landing";
 import {
 	branchFor,
 	createTasks,
@@ -35,12 +36,6 @@ function leaseEnd(project: ProjectRow): string {
 	return isoPlusSeconds(project.lease_minutes * 60);
 }
 
-function isProtected(path: string, prefixes: string[]): boolean {
-	return prefixes.some((p) =>
-		p.endsWith("/") ? path.startsWith(p) : path === p || path.startsWith(`${p}/`),
-	);
-}
-
 /** Step-by-step instructions for one piece of work. The agent needs nothing else to do it right. */
 function workSteps(type: WorkType, project: ProjectRow, task: TaskRow, branch: string): string {
 	const main = project.main_branch;
@@ -63,10 +58,12 @@ function workSteps(type: WorkType, project: ProjectRow, task: TaskRow, branch: s
 			`Rebase onto the latest main: \`git fetch origin && git rebase origin/${main}\`, resolve conflicts, run the project's checks locally, then \`git push --force-with-lease origin ${branch}\`.`,
 		);
 		add(
-			`Wait until GitHub CI has finished and is green for exactly the pushed commit (\`git rev-parse HEAD\`), Poll every few minutes with \`gh run list --commit <sha>\` and heartbeat in between; do not use \`gh run watch\`, it exhausts the shared GitHub API rate limit. If CI fails, fix, push and wait again.`,
+			`Wait until GitHub CI has finished and is green for exactly the pushed commit (\`git rev-parse HEAD\`). Poll every few minutes with \`gh run list --commit <sha>\` and heartbeat in between; do not use \`gh run watch\`, it exhausts the shared GitHub API rate limit. If CI fails, fix, push and wait again.`,
 		);
 		add(
-			`Call complete_review with that commit SHA. Rally re-checks the branch head and CI, then fast-forwards ${main} to it. If ${main} moved in the meantime, Rally refuses: rebase again and repeat from step 4.`,
+			project.landing_mode === "queue"
+				? `Call complete_review with that commit SHA. Rally re-checks the branch head, protected paths and CI. Then it either fast-forwards ${main} to it, or, if ${main} has moved or other approved work is waiting, queues it and lands it itself (rebase, CI, fast-forward). Either way your review is finished: do not rebase again. If the landing fails, the task comes back to review with the reason.`
+				: `Call complete_review with that commit SHA. Rally re-checks the branch head and CI, then fast-forwards ${main} to it. If ${main} moved in the meantime, Rally refuses: rebase again and repeat from step 4.`,
 		);
 		add(
 			"If you have to stop before finishing, push what you have and call save_checkpoint with precise notes; the task stays in review for the next agent. If the task cannot be finished without a human, call block_task.",
@@ -234,6 +231,91 @@ async function requireBranchHead(
 	}
 }
 
+/** Refuse unless CI on `sha` is green and every required check reported. */
+async function requireGreenCi(
+	ctx: ToolContext,
+	project: ProjectRow,
+	branch: string,
+	sha: string,
+): Promise<void> {
+	const ci = await ctx.github.ci(
+		project.repo,
+		sha,
+		parseJsonArray<string>(project.required_checks),
+	);
+	if (ci.state === "failure") {
+		const failed = ci.checks
+			.filter((c) => c.state === "failure")
+			.map((c) => `${c.name} (${c.detail})`);
+		throw new ToolError(
+			`Not merged: CI failed on ${sha}: ${failed.join(", ")}. Fix the problems, push, wait for CI to pass and call complete_review again with the new SHA.`,
+		);
+	}
+	if (ci.state === "none") {
+		throw new ToolError(
+			`Not merged: GitHub has no CI results for ${sha} yet. If CI was just triggered, wait a minute and call complete_review again. If it never starts, check that the workflow runs on pushes to ${branch}.`,
+		);
+	}
+	if (ci.state === "pending") {
+		const pending = ci.checks.filter((c) => c.state === "pending").map((c) => c.name);
+		const missing =
+			ci.missingRequired.length > 0
+				? ` Required checks not reported yet: ${ci.missingRequired.join(", ")}.`
+				: "";
+		throw new ToolError(
+			`Not merged: CI is still running on ${sha}${pending.length > 0 ? ` (${pending.join(", ")})` : ""}.${missing} Wait (call heartbeat meanwhile) and call complete_review again.`,
+		);
+	}
+}
+
+/** End a review by queueing its approved commit; Rally lands it (see landing.ts). */
+async function approveForLanding(
+	ctx: ToolContext,
+	task: TaskRow,
+	project: ProjectRow,
+	branch: string,
+	sha: string,
+	notes: string | undefined,
+) {
+	const position = (await landingQueueLength(ctx.db, project.id)) + 1;
+	const by = task.claimed_by ?? ctx.actor.name;
+	await releaseClaim(
+		ctx,
+		task.claim_id as string,
+		{
+			status: "approved",
+			head_sha: sha,
+			approved_sha: sha,
+			approved_by: by,
+			approved_at: nowIso(),
+			landing_attempts: 0,
+		},
+		{
+			projectId: project.id,
+			taskId: task.id,
+			type: "task.approved",
+			summary: `${by} approved #${task.id} ${task.title}; queued to land (position ${position})`,
+			details: compact({ commitSha: sha, branch, notes, queuePosition: position }),
+			actorName: by,
+		},
+	);
+	await advanceLanding(ctx.db, ctx.github, project);
+	const after = await loadTask(ctx, task.id);
+	const merged = after.status === "done";
+	return ok(
+		compact({
+			merged,
+			queued: !merged,
+			queuePosition: merged ? null : position,
+			mainSha: merged ? after.merged_sha : null,
+			next: merged
+				? "Merged. Your review is finished."
+				: `Approved and queued to land (position ${position}). Rally rebases, runs CI and fast-forwards ${project.main_branch} itself. Your review is finished: do not rebase or push this branch again.`,
+			task: toTaskSummary(after),
+		}),
+	);
+}
+
 export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 	server.registerTool(
 		"request_work",
@@ -272,6 +354,7 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 		handle(async (args) => {
 			const project = await resolveProject(ctx, args.project);
 			await expireStaleClaims(ctx.db, project.id);
+			await advanceLanding(ctx.db, ctx.github, project);
 			const projectInfo = compact({
 				slug: project.slug,
 				repo: project.repo,
@@ -414,6 +497,7 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 			const parts = [
 				`${n("in_progress")} in progress`,
 				`${n("reviewing")} being reviewed`,
+				`${n("approved") + n("landing")} waiting to land`,
 				`${waiting} waiting on dependencies`,
 				`${n("blocked")} blocked`,
 				`${n("done")} done`,
@@ -559,9 +643,9 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Complete review",
 			description:
-				"Approve the reviewed branch at exactly commitSha and merge it. Rally verifies that the task branch on GitHub is at that commit, that it is rebased on the latest main " +
-				"(a fast-forward), that it leaves protected paths alone and that CI on that commit is green. Then it fast-forwards main to the commit and marks the task done. " +
-				"If any check fails nothing is merged and the error says what to do.",
+				"Approve the reviewed branch at exactly commitSha and merge it. Rally verifies that the task branch on GitHub is at that commit, that it leaves protected paths alone and that CI on that commit is green. " +
+				"If the commit fast-forwards main, Rally moves main to it and marks the task done. Otherwise, in a project with a landing queue, Rally queues the approved commit and lands it itself " +
+				"(rebase, CI, fast-forward) and your review is finished; without a landing queue it refuses and you rebase again. If any check fails nothing is merged and the error says what to do.",
 			inputSchema: z.object({
 				claimId: claimIdSchema,
 				commitSha: shaSchema.describe("The reviewed, rebased and pushed head of the task branch"),
@@ -571,7 +655,17 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 					.optional()
 					.describe("What you checked and fixed during the review"),
 			}),
-			outputSchema: z.object({ merged: z.boolean(), mainSha: z.string(), task: taskSummaryOutput }),
+			outputSchema: z.object({
+				merged: z.boolean(),
+				queued: z
+					.boolean()
+					.optional()
+					.describe("True when Rally queued the approved commit to land it itself"),
+				queuePosition: z.number().optional(),
+				mainSha: z.string().optional(),
+				next: z.string().describe("What to do now"),
+				task: taskSummaryOutput,
+			}),
 			annotations: { destructiveHint: false },
 		},
 		handle(async (args) => {
@@ -583,57 +677,39 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 			}
 			const branch = task.branch ?? branchFor(project, task);
 			const main = project.main_branch;
+			const queue = project.landing_mode === "queue";
 			await requireBranchHead(ctx, project, branch, args.commitSha);
 
 			const cmp = await ctx.github.compare(project.repo, main, args.commitSha);
 			// "identical"/"behind": main already contains the commit, e.g. a retry after main was moved but before Rally recorded it.
 			const alreadyMerged = cmp.status === "identical" || cmp.status === "behind";
-			if (cmp.status === "diverged") {
+			if (cmp.status === "diverged" && !queue) {
 				throw new ToolError(
 					`Not merged: ${branch} is not based on the latest ${main} (${main} is at ${cmp.baseSha}, ${cmp.behindBy} commit(s) the branch lacks). ` +
 						`Run \`git fetch origin && git rebase origin/${main}\`, push with --force-with-lease, wait for CI to pass on the new head and call complete_review again with the new SHA.`,
 				);
 			}
 			if (!alreadyMerged) {
-				const protectedPaths = parseJsonArray<string>(project.protected_paths);
-				if (task.allow_protected_changes !== 1 && protectedPaths.length > 0) {
-					const touched = cmp.files.filter((f) => isProtected(f, protectedPaths));
-					if (touched.length > 0) {
-						throw new ToolError(
-							`Not merged: the branch changes protected paths (${touched.join(", ")}). Only the owner may change these. Revert those changes, or call block_task if the task cannot be done without them.`,
-						);
-					}
-				}
-				const ci = await ctx.github.ci(
-					project.repo,
-					args.commitSha,
-					parseJsonArray<string>(project.required_checks),
-				);
-				if (ci.state === "failure") {
-					const failed = ci.checks
-						.filter((c) => c.state === "failure")
-						.map((c) => `${c.name} (${c.detail})`);
+				const touched = touchesProtected(cmp.files, project, task);
+				if (touched.length > 0) {
 					throw new ToolError(
-						`Not merged: CI failed on ${args.commitSha}: ${failed.join(", ")}. Fix the problems, push, wait for CI to pass and call complete_review again with the new SHA.`,
+						`Not merged: the branch changes protected paths (${touched.join(", ")}). Only the owner may change these. Revert those changes, or call block_task if the task cannot be done without them.`,
 					);
 				}
-				if (ci.state === "none") {
-					throw new ToolError(
-						`Not merged: GitHub has no CI results for ${args.commitSha} yet. If CI was just triggered, wait a minute and call complete_review again. If it never starts, check that the workflow runs on pushes to ${branch}.`,
-					);
-				}
-				if (ci.state === "pending") {
-					const pending = ci.checks.filter((c) => c.state === "pending").map((c) => c.name);
-					const missing =
-						ci.missingRequired.length > 0
-							? ` Required checks not reported yet: ${ci.missingRequired.join(", ")}.`
-							: "";
-					throw new ToolError(
-						`Not merged: CI is still running on ${args.commitSha}${pending.length > 0 ? ` (${pending.join(", ")})` : ""}.${missing} Wait (call heartbeat meanwhile) and call complete_review again.`,
-					);
+				await requireGreenCi(ctx, project, branch, args.commitSha);
+				// With a landing queue, approved work that is already waiting lands first, and a branch that
+				// main has moved past is rebased by Rally instead of by another round of review.
+				if (
+					queue &&
+					(cmp.status === "diverged" || (await landingQueueLength(ctx.db, project.id)) > 0)
+				) {
+					return approveForLanding(ctx, task, project, branch, args.commitSha, args.notes);
 				}
 				const moved = await ctx.github.fastForward(project.repo, main, args.commitSha);
 				if (!moved) {
+					if (queue) {
+						return approveForLanding(ctx, task, project, branch, args.commitSha, args.notes);
+					}
 					throw new ToolError(
 						`Not merged: ${main} moved while you were reviewing, so this is no longer a fast-forward. Rebase onto the latest origin/${main}, push, wait for CI and call complete_review again with the new SHA.`,
 					);
@@ -658,6 +734,7 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 			return ok({
 				merged: true,
 				mainSha: args.commitSha,
+				next: "Merged. Your review is finished.",
 				task: toTaskSummary(await loadTask(ctx, task.id)),
 			});
 		}),

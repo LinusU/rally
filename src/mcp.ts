@@ -15,7 +15,8 @@ const WORK_LOOP = `The work loop (one piece of work per session):
 2. Implementing: push your work to the task branch often. When done, rebase on the latest main, push and call
    submit_for_review. If you must stop early, push and call save_checkpoint with notes for the next agent.
 3. Reviewing: fix every problem you find yourself, rebase on the latest main, push, wait for CI to go green
-   on that exact commit, then call complete_review with its SHA. Rally verifies and fast-forwards main.
+   on that exact commit, then call complete_review with its SHA. Rally verifies and fast-forwards main, or,
+   in a project with a landing queue, queues the approved commit and lands it itself; either way you are done.
 4. Keep your claim alive: every call with the claimId renews its lease; call heartbeat during long builds.
 5. Too big: split_task. Needs a human: block_task. Unrelated bugs or follow-ups: create_tasks.
 6. When request_work says there is nothing to do, stop.`;
@@ -25,7 +26,7 @@ Nobody supervises you: Rally is how you get work, hand it over and get it merged
 
 ${WORK_LOOP}
 
-Never push to main yourself. Only complete_review moves main, and only to a reviewed commit with green CI.`;
+Never push to main yourself. Only Rally moves main (through complete_review or its landing queue), and only to a reviewed commit with green CI.`;
 
 const OWNER_INSTRUCTIONS = `Rally coordinates many autonomous coding agents working on shared repositories. Many agents, one main branch.
 You are talking to the owner, who plans work and monitors progress.

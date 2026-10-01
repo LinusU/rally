@@ -1,6 +1,7 @@
 /**
- * The handful of GitHub REST calls Rally needs: branch heads, compare, CI results, ref updates.
- * All of them work with a fine-grained PAT (Contents read/write, Actions read, Commit statuses read).
+ * The handful of GitHub REST calls Rally needs: branch heads, compare, CI results, ref updates and
+ * the landing workflow's dispatch and report. All of them work with a fine-grained PAT (Contents
+ * read/write, Actions read, Commit statuses read).
  */
 
 const API = "https://api.github.com";
@@ -36,6 +37,16 @@ export interface CiResult {
 }
 
 const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+
+/** Commit status contexts Rally's own workflows report (e.g. the lander's result); never CI. */
+export const RALLY_CONTEXT_PREFIX = "rally/";
+
+export interface CommitStatus {
+	state: "success" | "pending" | "failure" | "error";
+	description: string;
+	targetUrl: string | null;
+	updatedAt: string;
+}
 
 export class GitHub {
 	constructor(
@@ -168,13 +179,15 @@ export class GitHub {
 					? { name, state, detail: r.conclusion ?? "unknown" }
 					: { name, state };
 			}),
-			...statuses.data.statuses.map((s) => {
-				const state: CheckState =
-					s.state === "success" ? "success" : s.state === "pending" ? "pending" : "failure";
-				return state === "failure"
-					? { name: s.context, state, detail: s.state }
-					: { name: s.context, state };
-			}),
+			...statuses.data.statuses
+				.filter((s) => !s.context.startsWith(RALLY_CONTEXT_PREFIX))
+				.map((s) => {
+					const state: CheckState =
+						s.state === "success" ? "success" : s.state === "pending" ? "pending" : "failure";
+					return state === "failure"
+						? { name: s.context, state, detail: s.state }
+						: { name: s.context, state };
+				}),
 		];
 		const names = new Set(checks.map((c) => c.name));
 		const missingRequired = required.filter((name) => !names.has(name));
@@ -186,6 +199,38 @@ export class GitHub {
 			state = "pending";
 		else state = "success";
 		return { state, checks, missingRequired };
+	}
+
+	/** The latest commit status a context reported for a commit, or null if it reported none. */
+	async commitStatus(repo: string, sha: string, context: string): Promise<CommitStatus | null> {
+		const { status, data } = await this.request<{
+			statuses: Array<{
+				context: string;
+				state: CommitStatus["state"];
+				description: string | null;
+				target_url: string | null;
+				updated_at: string;
+			}>;
+		}>("GET", `/repos/${repo}/commits/${sha}/status?per_page=100`);
+		if (status !== 200) this.fail(`reading commit status for ${sha}`, status, data);
+		const found = data.statuses.find((s) => s.context === context);
+		return found
+			? {
+					state: found.state,
+					description: found.description ?? "",
+					targetUrl: found.target_url,
+					updatedAt: found.updated_at,
+				}
+			: null;
+	}
+
+	/** Trigger `repository_dispatch` workflows (needs Contents: write on the token). */
+	async dispatch(repo: string, eventType: string, payload: Record<string, unknown>): Promise<void> {
+		const { status, data } = await this.request("POST", `/repos/${repo}/dispatches`, {
+			event_type: eventType,
+			client_payload: payload,
+		});
+		if (status !== 204) this.fail(`dispatching ${eventType}`, status, data);
 	}
 
 	/** Move a branch to `sha` without force. Returns false when that would not be a fast-forward. */
