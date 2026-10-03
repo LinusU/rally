@@ -64,8 +64,10 @@ jobs:
             report failure "$BRANCH moved after the approval (it is at ${head:0:10})"
             exit 0
           fi
+          # Compare without context lines (-U0): a clean rebase changes the context next to an edit
+          # (e.g. another task added a neighbouring `pub mod` line) but never the edit itself.
           base=$(git merge-base "origin/$MAIN" "$APPROVED")
-          approved_id=$(git diff "$base" "$APPROVED" | git patch-id --stable | cut -d' ' -f1)
+          approved_id=$(git diff -U0 "$base" "$APPROVED" | git patch-id --stable | cut -d' ' -f1)
 
           git checkout --quiet --detach "$APPROVED"
           if ! git rebase --quiet "origin/$MAIN"; then
@@ -73,7 +75,7 @@ jobs:
             report failure "rebase conflict with $MAIN; a reviewer must rebase it by hand"
             exit 0
           fi
-          rebased_id=$(git diff "origin/$MAIN" HEAD | git patch-id --stable | cut -d' ' -f1)
+          rebased_id=$(git diff -U0 "origin/$MAIN" HEAD | git patch-id --stable | cut -d' ' -f1)
           if [ -z "$rebased_id" ] || [ "$rebased_id" != "$approved_id" ]; then
             report failure "the rebased change differs from the approved one; it needs another review"
             exit 0
