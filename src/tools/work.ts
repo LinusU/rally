@@ -418,8 +418,10 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 
 			const { results: candidates } = await ctx.db
 				.prepare(
-					`${TASK_SELECT} WHERE t.project_id = ? AND t.claim_id IS NULL
-					   AND (t.status = 'needs_review' OR (t.status IN ('paused', 'todo') AND ${DEPS_SATISFIED}))
+					// The status list lets tasks_queue_idx skip finished tasks; the unary + keeps SQLite from
+					// using the claim_id index instead, which would read every unclaimed task in every project.
+					`${TASK_SELECT} WHERE t.project_id = ? AND t.status IN ('needs_review', 'paused', 'todo')
+					   AND +t.claim_id IS NULL AND (t.status = 'needs_review' OR ${DEPS_SATISFIED})
 					 ORDER BY CASE t.status WHEN 'needs_review' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
 					   t.priority DESC, t.updated_at, t.id
 					 LIMIT 10`,
