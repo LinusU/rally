@@ -483,24 +483,26 @@ export function registerWorkTools(server: McpServer, ctx: ToolContext): void {
 				});
 			}
 
+			// Agents with nothing to do poll this, so it only touches open tasks (the index narrows by status)
+			// and checks dependencies only for queued ones: finished tasks are most of a project's history.
 			const { results: counts } = await ctx.db
 				.prepare(
-					`SELECT t.status, COUNT(*) AS n, SUM(CASE WHEN ${DEPS_SATISFIED} THEN 0 ELSE 1 END) AS waiting
-					 FROM tasks t WHERE t.project_id = ? GROUP BY t.status`,
+					`SELECT t.status, COUNT(*) AS n,
+					   SUM(CASE WHEN t.status IN ('todo', 'paused') AND NOT ${DEPS_SATISFIED} THEN 1 ELSE 0 END) AS waiting
+					 FROM tasks t
+					 WHERE t.project_id = ? AND t.status IN ('todo', 'paused', 'in_progress', 'reviewing', 'approved', 'landing', 'blocked')
+					 GROUP BY t.status`,
 				)
 				.bind(project.id)
 				.all<{ status: string; n: number; waiting: number }>();
 			const n = (s: string) => counts.find((c) => c.status === s)?.n ?? 0;
-			const waiting = counts
-				.filter((c) => c.status === "todo" || c.status === "paused")
-				.reduce((sum, c) => sum + c.waiting, 0);
+			const waiting = counts.reduce((sum, c) => sum + c.waiting, 0);
 			const parts = [
 				`${n("in_progress")} in progress`,
 				`${n("reviewing")} being reviewed`,
 				`${n("approved") + n("landing")} waiting to land`,
 				`${waiting} waiting on dependencies`,
 				`${n("blocked")} blocked`,
-				`${n("done")} done`,
 			];
 			return ok({
 				type: "none",
